@@ -375,14 +375,10 @@ func DryRunCreate(ctx context.Context, c client.Client, namespace string,
 		Operator: corev1.TolerationOpExists,
 	}})
 
-	// Set default node health monitor if nil.
-	if specCopy.NodeHealthMonitor == nil {
-		specCopy.NodeHealthMonitor = &nvcrev1alpha1.NodeHealthMonitor{
-			CEL: &nvcrev1alpha1.CELNodeHealthCheck{
-				Expression: `node.spec.unschedulable == true`,
-			},
-		}
-	}
+	// Default the node health monitor the way the controller does, including
+	// dropping the cordon check for a target that includes cordoned nodes.
+	specCopy.NodeHealthMonitor = controller.ResolveNodeHealthMonitor(
+		specCopy.NodeHealthMonitor, spec.Orchestration.Target)
 
 	// --- 1. Validate dependencies first ---
 	var depNames []string

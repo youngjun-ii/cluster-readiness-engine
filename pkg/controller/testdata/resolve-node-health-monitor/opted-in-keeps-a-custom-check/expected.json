@@ -1,0 +1,5 @@
+{
+  "cel": {
+    "expression": "'gpud.nvidia.com/unhealthy' in node.metadata.labels"
+  }
+}

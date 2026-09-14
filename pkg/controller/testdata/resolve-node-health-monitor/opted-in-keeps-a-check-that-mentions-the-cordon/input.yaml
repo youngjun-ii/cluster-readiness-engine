@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Only the exact cordon check is dropped. An expression that combines it with
+# something else was written deliberately and stays.
+target:
+  includeUnschedulable: true
+nodeHealthMonitor:
+  cel:
+    expression: node.spec.unschedulable == true && node.metadata.labels['ready'] != 'true'

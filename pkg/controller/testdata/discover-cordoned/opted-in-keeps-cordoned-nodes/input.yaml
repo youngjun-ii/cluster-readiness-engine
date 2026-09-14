@@ -1,0 +1,9 @@
+# The node under test was cordoned on purpose and the target says so. It is
+# certified alongside the others and nothing is reported as skipped, because
+# nothing was: the whole point of the run is the cordoned node.
+includeUnschedulable: true
+nodes:
+  - name: node002
+  - name: node003
+    cordoned: true
+  - name: node004

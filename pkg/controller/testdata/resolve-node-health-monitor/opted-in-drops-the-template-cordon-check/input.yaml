@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The catalog entries all spell the cordon check out on their job template.
+# Opting in has to drop that too, whitespace and all, or the opt-in would be
+# undone by the very entries it is meant for.
+target:
+  includeUnschedulable: true
+nodeHealthMonitor:
+  cel:
+    expression: |
+      node.spec.unschedulable == true

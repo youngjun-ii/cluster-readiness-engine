@@ -44,10 +44,11 @@ func waitingForNodesMessage(cert *nvcrev1alpha1.Certification) string {
 		sort.Strings(parts)
 		sel = strings.Join(parts, ",")
 	}
-	return fmt.Sprintf(
-		"No schedulable nodes match %s; retrying for up to %s more."+
-			" Nodes that are cordoned or unschedulable do not count.",
-		sel, remaining)
+	msg := fmt.Sprintf("No schedulable nodes match %s; retrying for up to %s more.", sel, remaining)
+	if !includesUnschedulable(&cert.Spec.Target) {
+		msg += " Nodes that are cordoned or unschedulable do not count."
+	}
+	return msg
 }
 
 // errNoNodesMatch is returned when discoverTargetNodes finds zero nodes matching

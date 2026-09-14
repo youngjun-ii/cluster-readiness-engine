@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Without the opt-in the template check is left alone, cordon check or not.
+target:
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
+nodeHealthMonitor:
+  cel:
+    expression: node.spec.unschedulable == true
