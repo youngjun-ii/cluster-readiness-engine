@@ -1,0 +1,20 @@
+[
+  {
+    "index": 0,
+    "kind": "TrainingRuntime",
+    "rawUnchanged": true,
+    "replicatedJobs": [],
+    "resource": {
+      "apiVersion": "trainer.kubeflow.org/v1alpha1",
+      "kind": "TrainingRuntime",
+      "metadata": {
+        "name": "bare-runtime"
+      },
+      "spec": {
+        "mlPolicy": {
+          "numNodes": 1
+        }
+      }
+    }
+  }
+]

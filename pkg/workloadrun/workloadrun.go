@@ -274,6 +274,7 @@ func BuildWorkflowSpec(
 		rtCfg.GangSchedulerName = spec.GangScheduler.SchedulerName
 		rtCfg.GangSchedulerQueue = spec.GangScheduler.Queue
 	}
+	rtCfg.PriorityClassName = spec.PriorityClassName
 
 	var runtimeDep nvcrev1alpha1.DependencySpec
 	switch frameworkType {

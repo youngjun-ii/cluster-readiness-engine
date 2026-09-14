@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# A pod spec that already names a class. The field exists to decide the
+# priority, so it wins over whatever a template or override put there.
+priorityClassName: certification-low
+dependencies:
+  - apiVersion: trainer.kubeflow.org/v1alpha1
+    kind: TrainingRuntime
+    metadata:
+      name: torch-runtime
+    spec:
+      mlPolicy:
+        numNodes: 2
+      template:
+        spec:
+          replicatedJobs:
+            - name: node
+              template:
+                spec:
+                  template:
+                    spec:
+                      priorityClassName: some-other-class
+                      containers:
+                        - name: node
+                          image: nvcr.io/nvidia/nemo:25.07

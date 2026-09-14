@@ -1,0 +1,18 @@
+[
+  {
+    "workflow": "priority-cert-training-ne-d8ce1",
+    "dependencyKinds": [
+      "TrainingRuntime",
+      "ConfigMap",
+      "ComputeDomain"
+    ],
+    "replicatedJobs": [
+      {
+        "dependency": "nemotron5-8b-runtime",
+        "replicatedJob": "node",
+        "priorityClassName": "certification-low",
+        "schedulerName": "default-scheduler"
+      }
+    ]
+  }
+]

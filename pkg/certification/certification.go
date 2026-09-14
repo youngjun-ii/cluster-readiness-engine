@@ -209,6 +209,10 @@ func runCertificationRender(certFile, outputFormat string, dryRun bool,
 				workflows[i].Spec.Dependencies, cert.Spec.GangScheduler); err != nil {
 				return fmt.Errorf("apply gang scheduler for %s: %w", workflows[i].Name, err)
 			}
+			if err := platform.ApplyPriorityClassToDependencies(
+				workflows[i].Spec.Dependencies, cert.Spec.PriorityClassName); err != nil {
+				return fmt.Errorf("apply priority class for %s: %w", workflows[i].Name, err)
+			}
 
 			results, dryRunErr := render.DryRunCreate(ctx, dryRunClient, namespace, &workflows[i].Spec, nodes)
 			if dryRunErr != nil {
@@ -270,6 +274,10 @@ func resolveWorkflowsOffline(
 		if err := platform.ApplyGangSchedulerToDependencies(
 			workflows[i].Spec.Dependencies, cert.Spec.GangScheduler); err != nil {
 			return fmt.Errorf("apply gang scheduler for %s: %w", workflows[i].Name, err)
+		}
+		if err := platform.ApplyPriorityClassToDependencies(
+			workflows[i].Spec.Dependencies, cert.Spec.PriorityClassName); err != nil {
+			return fmt.Errorf("apply priority class for %s: %w", workflows[i].Name, err)
 		}
 	}
 	return nil

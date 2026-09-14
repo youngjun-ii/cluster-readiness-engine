@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The MPI shape: worker and launcher. Both get the class, since a gang is only
+# as high-priority as its lowest member. The launcher's schedulerName is left
+# alone: priority is not the gang scheduler's business.
+priorityClassName: certification-low
+dependencies:
+  - apiVersion: trainer.kubeflow.org/v1alpha1
+    kind: TrainingRuntime
+    metadata:
+      name: nccl-runtime
+    spec:
+      template:
+        spec:
+          replicatedJobs:
+            - name: node
+              template:
+                spec:
+                  template:
+                    spec:
+                      containers:
+                        - name: node
+                          image: nvcr.io/nvidia/pytorch:26.01-py3
+            - name: launcher
+              template:
+                metadata:
+                  labels:
+                    trainer.kubeflow.org/trainjob-ancestor-step: trainer
+                spec:
+                  template:
+                    spec:
+                      schedulerName: default-scheduler
+                      containers:
+                        - name: launcher
+                          image: nvcr.io/nvidia/pytorch:26.01-py3

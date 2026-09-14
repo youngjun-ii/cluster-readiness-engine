@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# An MPI category: both the node and the launcher replicatedJobs carry the
+# class, and no scheduler name is written since gangScheduler is unset.
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Certification
+metadata:
+  name: priority-cert
+spec:
+  target:
+    nodeSelector:
+      nvidia.com/gpu.product: NVIDIA-GB200
+  nodesPerJob: 2
+  priorityClassName: certification-low
+  categories:
+    - domain: communication
+      variant: nccl-all-reduce

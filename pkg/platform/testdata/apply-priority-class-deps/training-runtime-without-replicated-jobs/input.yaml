@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# A TrainingRuntime with no replicatedJobs has no pod template to write to and
+# is left as it was.
+priorityClassName: certification-low
+dependencies:
+  - apiVersion: trainer.kubeflow.org/v1alpha1
+    kind: TrainingRuntime
+    metadata:
+      name: bare-runtime
+    spec:
+      mlPolicy:
+        numNodes: 1
