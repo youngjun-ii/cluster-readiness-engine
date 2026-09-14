@@ -20,6 +20,9 @@ import (
 // fully certified from one where a leftover cordon meant half of it was never
 // tested — both reported PASSED. These cases pin what discovery hands back.
 //
+// A target with includeUnschedulable keeps them instead, and then has nothing
+// to report as skipped: the cordoned node is certified like any other.
+//
 // The names come back sorted for the same reason the node list does: they are
 // written to status and printed in the report, so an unsorted list would make
 // one cluster produce a different report on each reconcile.
@@ -30,7 +33,8 @@ func TestDiscoverCordonedNodes(t *testing.T) {
 	}
 	p.TestDir(t, func(tc *testutil.TestCase) error {
 		var input struct {
-			Nodes []struct {
+			IncludeUnschedulable bool `json:"includeUnschedulable"`
+			Nodes                []struct {
 				Name       string `yaml:"name"`
 				Cordoned   bool   `yaml:"cordoned"`
 				NoGPU      bool   `yaml:"noGPU"`
@@ -60,7 +64,7 @@ func TestDiscoverCordonedNodes(t *testing.T) {
 
 		nodes, cordoned, err := discoverTargetNodes(context.Background(),
 			unorderedReader{nodes: given},
-			&nvcrev1alpha1.TargetSpec{})
+			&nvcrev1alpha1.TargetSpec{IncludeUnschedulable: input.IncludeUnschedulable})
 		if err != nil {
 			return err
 		}

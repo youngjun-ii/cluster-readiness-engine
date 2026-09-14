@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# A check of the operator's own is not touched by includeUnschedulable.
+target:
+  includeUnschedulable: true
+nodeHealthMonitor:
+  cel:
+    expression: "'gpud.nvidia.com/unhealthy' in node.metadata.labels"

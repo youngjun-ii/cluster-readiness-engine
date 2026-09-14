@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# includeUnschedulable on a training workload with no selectors: the only
+# toleration is the one that lets the pods onto the cordoned node.
+hasLauncher: false
+target:
+  includeUnschedulable: true

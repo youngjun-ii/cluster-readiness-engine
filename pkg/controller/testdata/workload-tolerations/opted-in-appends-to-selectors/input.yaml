@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# includeUnschedulable with selectors: the selector tolerations come first and
+# the cordon toleration is appended, so the pods reach a node that is both
+# tainted and cordoned.
+hasLauncher: false
+target:
+  includeUnschedulable: true
+  taintSelectors:
+    - key: nvidia.com/gpu
+      value: present
+      effect: NoSchedule

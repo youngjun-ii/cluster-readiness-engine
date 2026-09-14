@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# includeUnschedulable and no monitor on the template: the cordon check would
+# fail the run on the cordon it asked for, so there is no monitor.
+target:
+  includeUnschedulable: true

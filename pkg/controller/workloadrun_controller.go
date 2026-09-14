@@ -484,11 +484,8 @@ func (r *WorkloadRunReconciler) buildJobTemplate(run *nvcrev1alpha1.WorkloadRun,
 		Workload: nvcrev1alpha1.WorkloadSpec{
 			TrainJob: trainJobSpec,
 		},
-		NodeHealthMonitor: &nvcrev1alpha1.NodeHealthMonitor{
-			CEL: &nvcrev1alpha1.CELNodeHealthCheck{
-				Expression: "node.spec.unschedulable == true",
-			},
-		},
+		// The cordon check, unless the target includes cordoned nodes on purpose.
+		NodeHealthMonitor: ResolveNodeHealthMonitor(nil, spec.Target),
 	}
 
 	if spec.GoodputMeasurement != nil {

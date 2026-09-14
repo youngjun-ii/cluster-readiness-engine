@@ -659,10 +659,14 @@ func discoverTargetNodes(ctx context.Context, reader client.Reader, target *nvcr
 	// would turn a fully certified fleet into INCOMPLETE over a node that could
 	// never have been tested. That is reachable whenever the target is not the
 	// usual gpu.present selector — a nodeNames list can pull in CPU nodes.
+	//
+	// A target that includes unschedulable nodes skips this filter: the run is
+	// there to test cordoned nodes, and buildJob gives its pods the toleration
+	// and health check that make that possible.
 	var schedulable []corev1.Node
 	var cordoned []string
 	for _, n := range nodes {
-		if n.Spec.Unschedulable {
+		if n.Spec.Unschedulable && !includesUnschedulable(target) {
 			if n.Labels[GPUNodeLabel] == present {
 				cordoned = append(cordoned, n.Name)
 			}
@@ -1044,12 +1048,11 @@ func (r *WorkflowReconciler) createJobForGroup(ctx context.Context, workflow *nv
 	//      Operator: Exists toleration as a fallback so existing NCCL deployments
 	//      that rely on it keep working.
 	//   3. Otherwise, no controller-injected tolerations.
-	if target := workflow.Spec.Orchestration.Target; target != nil && len(target.TaintSelectors) > 0 {
-		adapter.SetTolerations(&job.Spec.Workload, buildTolerations(target.TaintSelectors))
-	} else if workload.HasLauncherTarget(&job.Spec.Workload) {
-		adapter.SetTolerations(&job.Spec.Workload, []corev1.Toleration{{
-			Operator: corev1.TolerationOpExists,
-		}})
+	// A target that includes unschedulable nodes adds a toleration of the cordon
+	// taint on top, unless the result already covers it.
+	target := workflow.Spec.Orchestration.Target
+	if tolerations := workloadTolerations(target, workload.HasLauncherTarget(&job.Spec.Workload)); len(tolerations) > 0 {
+		adapter.SetTolerations(&job.Spec.Workload, tolerations)
 	}
 
 	// Disable MNNVL for diagnose stages that require it.
@@ -1057,14 +1060,9 @@ func (r *WorkflowReconciler) createJobForGroup(ctx context.Context, workflow *nv
 		applyDiagnoseMNNVLOverride(&job.Spec.Workload, orch.Diagnose, group.Nodes)
 	}
 
-	// Set default node health monitor if not already configured
-	if job.Spec.NodeHealthMonitor == nil {
-		job.Spec.NodeHealthMonitor = &nvcrev1alpha1.NodeHealthMonitor{
-			CEL: &nvcrev1alpha1.CELNodeHealthCheck{
-				Expression: `node.spec.unschedulable == true`,
-			},
-		}
-	}
+	// Default the node health monitor to the cordon check, or drop that check
+	// when the target includes cordoned nodes on purpose.
+	job.Spec.NodeHealthMonitor = ResolveNodeHealthMonitor(job.Spec.NodeHealthMonitor, target)
 
 	// Merge labels from template metadata
 	labels := make(map[string]string)

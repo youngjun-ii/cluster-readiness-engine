@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The MPI blanket already tolerates the cordon taint, so includeUnschedulable
+# changes nothing for it.
+hasLauncher: true
+target:
+  includeUnschedulable: true

@@ -1,0 +1,6 @@
+[
+  {
+    "key": "node.kubernetes.io/unschedulable",
+    "operator": "Exists"
+  }
+]

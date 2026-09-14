@@ -138,6 +138,19 @@ type TargetSpec struct {
 	// otherwise receive — declared selectors always win.
 	// +optional
 	TaintSelectors []TaintSelector `json:"taintSelectors,omitempty"`
+
+	// includeUnschedulable keeps nodes marked unschedulable (cordoned) in the
+	// target set instead of dropping them. Use it to test a node that was taken
+	// out of service and has to prove itself before it is returned: the node
+	// stays cordoned for the whole run, so nothing else can land on it.
+	//
+	// Workload pods then also tolerate the node.kubernetes.io/unschedulable
+	// taint, and the default node health check, which otherwise records a cordon
+	// during the run as a hardware failure, is not applied. A nodeHealthMonitor
+	// on the job template that is exactly that cordon check is dropped for the
+	// same reason; any other expression is kept as written.
+	// +optional
+	IncludeUnschedulable bool `json:"includeUnschedulable,omitempty"`
 }
 
 // TaintSelector selects nodes by taint.

@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Declared selectors win over the MPI blanket, exactly as ADR-063 says.
+hasLauncher: true
+target:
+  taintSelectors:
+    - key: nvidia.com/gpu
+      value: present
+      effect: NoSchedule

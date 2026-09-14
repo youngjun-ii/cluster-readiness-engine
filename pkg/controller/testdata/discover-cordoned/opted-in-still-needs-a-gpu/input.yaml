@@ -1,0 +1,8 @@
+# Opting in relaxes the cordon filter only. A cordoned node without a GPU is
+# still not a candidate, and still not a loss worth reporting.
+includeUnschedulable: true
+nodes:
+  - name: node002
+  - name: node003
+    cordoned: true
+    noGPU: true

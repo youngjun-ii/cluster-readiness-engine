@@ -1,0 +1,7 @@
+[
+  {
+    "key": "node.kubernetes.io/unschedulable",
+    "operator": "Exists",
+    "effect": "NoSchedule"
+  }
+]

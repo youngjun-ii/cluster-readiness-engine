@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# A selector that names the cordon taint itself, which is how an operator
+# targets cordoned nodes by their taint. Nothing is appended: one toleration
+# per taint.
+hasLauncher: false
+target:
+  includeUnschedulable: true
+  taintSelectors:
+    - key: node.kubernetes.io/unschedulable

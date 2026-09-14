@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# An MPI workload without taintSelectors keeps the blanket toleration NCCL
+# deployments have always relied on.
+hasLauncher: true
+target:
+  nodeSelector:
+    nvidia.com/gpu.present: "true"

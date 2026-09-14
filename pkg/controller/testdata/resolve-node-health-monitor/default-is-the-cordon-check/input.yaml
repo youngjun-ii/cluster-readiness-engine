@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# No monitor on the template and an ordinary target: the cordon check.
+target:
+  nodeSelector:
+    nvidia.com/gpu.present: "true"
