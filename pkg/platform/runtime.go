@@ -123,6 +123,9 @@ type RuntimeConfig struct {
 	// GangSchedulerQueue is the queue label value for the gang scheduler.
 	// Defaults to "default-queue" when GangSchedulerName is set and Queue is empty.
 	GangSchedulerQueue string
+	// PriorityClassName is set as priorityClassName on every pod spec.
+	// Empty means the pod templates carry no priority class.
+	PriorityClassName string
 }
 
 // applyGangScheduler injects schedulerName into the pod spec and the queue label
@@ -191,6 +194,7 @@ func BuildTorchRuntime(cfg RuntimeConfig) nvcrev1alpha1.DependencySpec {
 		labelKeyApp: cfg.EntryName,
 	}
 	applyGangScheduler(cfg, podSpec, podLabels)
+	applyPriorityClass(cfg, podSpec)
 
 	rt := map[string]any{
 		"apiVersion": "trainer.kubeflow.org/v1alpha1",
@@ -342,6 +346,7 @@ func BuildMPIRuntime(cfg RuntimeConfig) nvcrev1alpha1.DependencySpec {
 	}
 	workerPodLabels := map[string]any{}
 	applyGangScheduler(cfg, workerPodSpec, workerPodLabels)
+	applyPriorityClass(cfg, workerPodSpec)
 
 	workerReplicatedJob := map[string]any{
 		keyName: nodeJobName,
@@ -371,6 +376,7 @@ func BuildMPIRuntime(cfg RuntimeConfig) nvcrev1alpha1.DependencySpec {
 		"trainer.kubeflow.org/trainjob-ancestor-step": "trainer",
 	}
 	applyGangScheduler(cfg, launcherPodSpec, launcherPodLabels)
+	applyPriorityClass(cfg, launcherPodSpec)
 
 	rt := map[string]any{
 		"apiVersion": "trainer.kubeflow.org/v1alpha1",

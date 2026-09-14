@@ -510,6 +510,12 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 		workflowSpec.Dependencies, certification.Spec.GangScheduler); err != nil {
 		return "", fmt.Errorf("applying gang scheduler for %s/%s: %w", category.Domain, category.Variant, err)
 	}
+	// Priority is applied last for the same reason, and independently of the
+	// gang scheduler: the default scheduler honours pod priority too.
+	if err := platform.ApplyPriorityClassToDependencies(
+		workflowSpec.Dependencies, certification.Spec.PriorityClassName); err != nil {
+		return "", fmt.Errorf("applying priority class for %s/%s: %w", category.Domain, category.Variant, err)
+	}
 
 	if len(applied) > 0 || len(workflowSpec.Overrides) > 0 {
 		log.Info("Resolved overlays",

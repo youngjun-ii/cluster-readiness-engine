@@ -1,0 +1,76 @@
+[
+  {
+    "index": 0,
+    "kind": "TrainingRuntime",
+    "rawUnchanged": false,
+    "replicatedJobs": [
+      {
+        "name": "node",
+        "priorityClassName": "certification-low",
+        "schedulerName": ""
+      },
+      {
+        "name": "launcher",
+        "priorityClassName": "certification-low",
+        "schedulerName": "default-scheduler"
+      }
+    ],
+    "resource": {
+      "apiVersion": "trainer.kubeflow.org/v1alpha1",
+      "kind": "TrainingRuntime",
+      "metadata": {
+        "name": "nccl-runtime"
+      },
+      "spec": {
+        "template": {
+          "spec": {
+            "replicatedJobs": [
+              {
+                "name": "node",
+                "template": {
+                  "spec": {
+                    "template": {
+                      "spec": {
+                        "containers": [
+                          {
+                            "image": "nvcr.io/nvidia/pytorch:26.01-py3",
+                            "name": "node"
+                          }
+                        ],
+                        "priorityClassName": "certification-low"
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "name": "launcher",
+                "template": {
+                  "metadata": {
+                    "labels": {
+                      "trainer.kubeflow.org/trainjob-ancestor-step": "trainer"
+                    }
+                  },
+                  "spec": {
+                    "template": {
+                      "spec": {
+                        "containers": [
+                          {
+                            "image": "nvcr.io/nvidia/pytorch:26.01-py3",
+                            "name": "launcher"
+                          }
+                        ],
+                        "priorityClassName": "certification-low",
+                        "schedulerName": "default-scheduler"
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+]

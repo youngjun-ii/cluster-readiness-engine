@@ -1,0 +1,6 @@
+[
+  {
+    "replicatedJob": "node",
+    "priorityClassName": "certification-low"
+  }
+]

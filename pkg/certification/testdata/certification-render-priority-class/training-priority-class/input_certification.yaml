@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The training entry hardcodes schedulerName: default-scheduler. The class is
+# applied regardless, and the scheduler name is left as the catalog wrote it.
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Certification
+metadata:
+  name: priority-cert
+spec:
+  target:
+    nodeSelector:
+      nvidia.com/gpu.product: NVIDIA-GB200
+  nodesPerJob: 2
+  priorityClassName: certification-low
+  categories:
+    - domain: training
+      variant: nemotron5-8b
+      options:
+        maxSteps: 50

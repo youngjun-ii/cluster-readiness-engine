@@ -282,6 +282,19 @@ type WorkloadRunSpec struct {
 	// is applied so the scheduler holds all pods until the full gang can be placed.
 	// +optional
 	GangScheduler *GangSchedulerSpec `json:"gangScheduler,omitempty"`
+
+	// priorityClassName is set as spec.priorityClassName on every pod template
+	// of every resolved TrainingRuntime, so the scheduler orders the
+	// workload's pods against other work by that PriorityClass and, where it
+	// preempts, preempts them by it. Applied after catalog and platform
+	// overrides resolve, and independent of gangScheduler: pod priority is read
+	// by the default scheduler and by gang schedulers alike. The PriorityClass
+	// must exist in the cluster, or the pods are rejected at admission. Unset
+	// leaves the pod templates as rendered.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	PriorityClassName string `json:"priorityClassName,omitempty"`
 }
 
 // GangSchedulerSpec configures gang scheduling for WorkloadRun pods.

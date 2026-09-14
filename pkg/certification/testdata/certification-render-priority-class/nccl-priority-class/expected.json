@@ -1,0 +1,23 @@
+[
+  {
+    "workflow": "priority-cert-communicati-59d7e",
+    "dependencyKinds": [
+      "TrainingRuntime",
+      "ComputeDomain"
+    ],
+    "replicatedJobs": [
+      {
+        "dependency": "nccl-all-reduce-runtime",
+        "replicatedJob": "node",
+        "priorityClassName": "certification-low",
+        "schedulerName": ""
+      },
+      {
+        "dependency": "nccl-all-reduce-runtime",
+        "replicatedJob": "launcher",
+        "priorityClassName": "certification-low",
+        "schedulerName": ""
+      }
+    ]
+  }
+]

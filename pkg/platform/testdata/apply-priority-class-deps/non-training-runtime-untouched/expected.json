@@ -1,0 +1,66 @@
+[
+  {
+    "index": 0,
+    "kind": "ConfigMap",
+    "rawUnchanged": true,
+    "replicatedJobs": [],
+    "resource": {
+      "apiVersion": "v1",
+      "data": {
+        "config.yaml": "steps: 50\n"
+      },
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "model-config"
+      }
+    }
+  },
+  {
+    "index": 1,
+    "kind": "TrainingRuntime",
+    "rawUnchanged": false,
+    "replicatedJobs": [
+      {
+        "name": "node",
+        "priorityClassName": "certification-low",
+        "schedulerName": ""
+      }
+    ],
+    "resource": {
+      "apiVersion": "trainer.kubeflow.org/v1alpha1",
+      "kind": "TrainingRuntime",
+      "metadata": {
+        "name": "torch-runtime"
+      },
+      "spec": {
+        "mlPolicy": {
+          "numNodes": 2
+        },
+        "template": {
+          "spec": {
+            "replicatedJobs": [
+              {
+                "name": "node",
+                "template": {
+                  "spec": {
+                    "template": {
+                      "spec": {
+                        "containers": [
+                          {
+                            "image": "nvcr.io/nvidia/nemo:25.07",
+                            "name": "node"
+                          }
+                        ],
+                        "priorityClassName": "certification-low"
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+]

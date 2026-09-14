@@ -1,0 +1,10 @@
+[
+  {
+    "replicatedJob": "node",
+    "priorityClassName": ""
+  },
+  {
+    "replicatedJob": "launcher",
+    "priorityClassName": ""
+  }
+]

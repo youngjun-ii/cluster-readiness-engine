@@ -1,0 +1,39 @@
+[
+  {
+    "workflow": "priority-cert-communicati-59d7e",
+    "dependencyKinds": [
+      "TrainingRuntime",
+      "ComputeDomain"
+    ],
+    "replicatedJobs": [
+      {
+        "dependency": "nccl-all-reduce-runtime",
+        "replicatedJob": "node",
+        "priorityClassName": "certification-low",
+        "schedulerName": "kai-scheduler"
+      },
+      {
+        "dependency": "nccl-all-reduce-runtime",
+        "replicatedJob": "launcher",
+        "priorityClassName": "certification-low",
+        "schedulerName": "kai-scheduler"
+      }
+    ]
+  },
+  {
+    "workflow": "priority-cert-training-ne-d8ce1",
+    "dependencyKinds": [
+      "TrainingRuntime",
+      "ConfigMap",
+      "ComputeDomain"
+    ],
+    "replicatedJobs": [
+      {
+        "dependency": "nemotron5-8b-runtime",
+        "replicatedJob": "node",
+        "priorityClassName": "certification-low",
+        "schedulerName": "kai-scheduler"
+      }
+    ]
+  }
+]
