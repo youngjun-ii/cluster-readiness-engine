@@ -240,9 +240,11 @@ overrides:
       in: [gb200, gb300]
   dependencies:
 {{ lib "deps/gb200-compute-domain-and-dra-torch.yaml" . | indent 2 }}
+{{- if ne .TestScale "intra-node" }}
   orchestration:
     topology:
       topologyKey: nvidia.com/gpu.clique
+{{- end }}
 # --- AWS + GB200 (EFA) ---
 - when:
     platform:
