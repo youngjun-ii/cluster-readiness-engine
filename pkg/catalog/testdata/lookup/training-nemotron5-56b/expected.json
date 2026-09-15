@@ -20,7 +20,7 @@
     },
     "trainJob": {
       "runtimeRef": "nemotron5-56b-runtime",
-      "trainerImage": "nvcr.io/nvidia/pytorch:25.08-py3"
+      "trainerImage": "nvcr.io/nvidia/pytorch:26.01-py3"
     }
   },
   "orchestration": {
