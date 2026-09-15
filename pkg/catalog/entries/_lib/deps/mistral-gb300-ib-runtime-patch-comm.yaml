@@ -6,9 +6,6 @@
   metadata:
     name: {{ .EntryName }}-runtime
   spec:
-    mlPolicy:
-      mpi:
-        numProcPerNode: {{ .GpusPerNode }}
     template:
       spec:
         replicatedJobs:
