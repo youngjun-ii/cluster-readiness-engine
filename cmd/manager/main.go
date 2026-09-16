@@ -65,8 +65,8 @@ type controllerConcurrencyOptions struct {
 	measurementMaxConcurrentReconciles int
 }
 
-// resultsArchiveOptions is the flag surface of the results archive
-// (ADR-075). The archive is enabled by naming at least one destination.
+// resultsArchiveOptions is the flag surface of the results archive.
+// The archive is enabled by naming at least one destination.
 type resultsArchiveOptions struct {
 	// destinations are "name=gs://bucket/prefix" pairs.
 	destinations      []string

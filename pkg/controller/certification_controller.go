@@ -85,7 +85,7 @@ type CertificationReconciler struct {
 	WorkflowRequeueInterval time.Duration
 	// MaxConcurrentReconciles bounds the number of Certification objects reconciled concurrently.
 	MaxConcurrentReconciles int
-	// Archive enables the results archive (ADR-075). nil disables it and
+	// Archive enables the results archive. nil disables it and
 	// leaves the terminal branch exactly as it was.
 	Archive *ArchiveConfig
 }
@@ -217,7 +217,7 @@ func (r *CertificationReconciler) initializeCategoryStatuses(ctx context.Context
 	}
 
 	// The run has started: snapshot the nodes' identity for the results
-	// archive before any of them can be replaced. Best-effort; see ADR-075 §4.
+	// archive before any of them can be replaced. Best-effort; see captureNodeIdentity.
 	r.captureNodeIdentity(ctx, certification, nodes)
 
 	categoryStatuses[0].Status = categoryStatusInProgress

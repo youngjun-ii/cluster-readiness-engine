@@ -40,7 +40,7 @@ type buildInput struct {
 	} `yaml:"failedNodes"`
 }
 
-// Each case pins one builder rule from ADR-075 §3. The golden is the whole
+// Each case pins one builder rule of the record. The golden is the whole
 // record because a rule that is right in nodeVerdicts and wrong in coverage
 // still produces a false record.
 func TestBuild(t *testing.T) {

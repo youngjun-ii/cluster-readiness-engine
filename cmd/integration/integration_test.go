@@ -530,7 +530,7 @@ type waitConfig struct {
 	DeleteAfterWait []collectSpec `json:"deleteAfterWait,omitempty"`
 	// WaitForDeletion lists resources that must be fully deleted before collection.
 	WaitForDeletion []collectSpec `json:"waitForDeletion,omitempty"`
-	// Archive enables the results archive (ADR-075) on the Certification
+	// Archive enables the results archive on the Certification
 	// controller with an in-memory store per destination, the same way the
 	// fake PodLogFetcher stands in for the kubelet. The stores' contents are
 	// serialised into the golden under "archive".
@@ -1386,7 +1386,7 @@ func collectTopologyMetrics(t *testing.T, namespace, workflow, topologyKey strin
 }
 
 // ---------------------------------------------------------------------------
-// Results archive (ADR-075)
+// Results archive
 // ---------------------------------------------------------------------------
 
 // buildFakeArchive turns the case's archive block into a controller config

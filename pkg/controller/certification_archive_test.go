@@ -93,9 +93,8 @@ type archiveTestPass struct {
 	Annotations map[string]string `json:"annotations"`
 }
 
-// TestCertificationArchive pins the emit state machine of ADR-075 §5-§7 and
-// §10: destination selection, the stability sweep, the terminal-condition
-// date in the key, write-once handling, the backoff ladder per failure kind,
+// TestCertificationArchive pins the emit state machine: destination selection,
+// the stability sweep, the terminal-condition date in the key, write-once handling, the backoff ladder per failure kind,
 // and the one bounded attempt on deletion.
 func TestCertificationArchive(t *testing.T) {
 	p := testutil.TestCaseParser{Subdir: "certification-archive"}

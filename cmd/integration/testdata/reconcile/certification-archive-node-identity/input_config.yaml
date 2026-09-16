@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Results archive (ADR-075), node identity capture: when the controller
+# Results archive, node identity capture: when the controller
 # creates the first Workflow for a run that will be archived, it snapshots
 # the discovered nodes into a ConfigMap it owns and records the name on the
 # Certification. The golden pins the snapshot (UIDs normalised) and the

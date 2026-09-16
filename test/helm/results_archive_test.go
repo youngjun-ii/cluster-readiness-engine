@@ -27,7 +27,7 @@ const (
 	managerContainer = "manager"
 )
 
-// managerArchiveSurface is everything the results archive (ADR-075) adds to
+// managerArchiveSurface is everything the results archive adds to
 // the manager Deployment: the flags, the environment, and the credential
 // mount. Rendering all four together pins that a disabled archive adds
 // nothing and that the two auth modes differ only where they should.
@@ -38,8 +38,8 @@ type managerArchiveSurface struct {
 	Volumes      []corev1.Volume      `json:"volumes"`
 }
 
-// TestHelmTemplateRendersResultsArchive covers the chart's half of ADR-075
-// §8-§9. A `set` list renders the chart; an `error` file marks a
+// TestHelmTemplateRendersResultsArchive covers the chart's half of the results
+// archive. A `set` list renders the chart; an `error` file marks a
 // configuration the chart must refuse rather than render half of.
 func TestHelmTemplateRendersResultsArchive(t *testing.T) {
 	requireHelm(t)

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Results archive (ADR-075), terminal-branch emit: a Certification whose only
+# Results archive, terminal-branch emit: a Certification whose only
 # Workflow is already terminal reaches Succeeded, the controller verifies the
 # owned Workflows are terminal, builds the record from the Workflow, its Job,
 # the BandwidthMeasurement and the node-identity snapshot, and writes it once

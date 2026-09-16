@@ -41,7 +41,7 @@ metrics:
     # (monitoring.coreos.com/v1). Set to false on clusters without them.
     enabled: true
 
-# Results archive (ADR-075): when a Certification reaches a stable terminal
+# Results archive: when a Certification reaches a stable terminal
 # state, the controller writes one immutable JSON record describing the run to
 # a Google Cloud Storage bucket. Off by default; with it off the controller
 # behaves exactly as before.

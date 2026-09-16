@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package record defines the archived result document for one certification
-// run and builds it from cluster state (ADR-075).
+// run and builds it from cluster state.
 //
 // The document is a record, not a rendering: it keeps the evidence a
 // downstream consumer needs to answer "was node X certified, by which test,

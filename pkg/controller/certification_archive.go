@@ -26,7 +26,7 @@ import (
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/naming"
 )
 
-// Annotations that carry the results-archive state (ADR-075). The archive has
+// Annotations that carry the results-archive state. The archive has
 // no CRD field in v1; these are the whole surface.
 const (
 	// AnnotationArchive set to "false" opts a run out of archiving.

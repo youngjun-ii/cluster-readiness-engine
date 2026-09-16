@@ -22,8 +22,6 @@ The results archive closes that gap. When a Certification reaches a stable termi
  annotations on the Certification: archive-state, archive-uri, archive-attempts
 ```
 
-The design is recorded in [ADR-075](../designs/075-results-archive.md).
-
 ## Enable it
 
 Archiving is configured on the controller and selected per run. Destinations have names; a run can only archive to a destination the controller was configured with, so nobody can point the controller's credentials at an arbitrary bucket.

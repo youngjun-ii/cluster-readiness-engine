@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Results archive (ADR-075), opt-out: the archive is enabled with a default
+# Results archive, opt-out: the archive is enabled with a default
 # destination, but the Certification carries nvcre.nvidia.com/archive: "false".
 # Nothing is written; the state records Skipped.
 waitFor:

@@ -664,7 +664,7 @@ Use --cleanup to teardown installed components after completion.`,
 }
 
 // setArchiveDestination stamps the annotation the controller reads to pick a
-// results-archive destination (ADR-075). It does nothing else: the
+// results-archive destination. It does nothing else: the
 // controller owns the credentials and the list of valid names, and an unknown
 // name is reported on the Certification, not here.
 func setArchiveDestination(cert *nvcrev1alpha1.Certification, name string) {
