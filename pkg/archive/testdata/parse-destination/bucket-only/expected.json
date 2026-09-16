@@ -1,0 +1,7 @@
+{
+  "bucket": "nvcre-results",
+  "prefix": "",
+  "string": "gs://nvcre-results",
+  "key": "v=1/run=abc/record.json",
+  "uri": "gs://nvcre-results/v=1/run=abc/record.json"
+}
