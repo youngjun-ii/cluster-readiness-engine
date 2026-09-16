@@ -1,0 +1,21 @@
+# No node-identity snapshot exists (a Certification created before the
+# feature, or a capture that failed). The builder reads the live Node objects,
+# records a node-identity-not-captured gap, and still derives ids from the
+# system UUID where the Node has one and from the hostname where it does not.
+# The failure log tail is opted in here, so the evidence carries it.
+clusterId: voyager-7
+includeFailureLog: true
+captureIdentity: false
+failedNodes:
+  - configMap: failed-nodes-0f1e2d3c
+    namespace: nvcre-runs
+    nodes:
+      - name: gpu-01
+        reason: HardwareFailureDetected
+        message: "node.spec.taints.exists(t, t.key == 'nvidia.com/gpu-unhealthy')"
+      - name: gpu-01
+        reason: WorkloadFailed
+        message: "first failed job: nccl-launcher"
+      - name: gpu-02
+        reason: WorkloadFailed
+        message: "first failed job: nccl-launcher"

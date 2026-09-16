@@ -1,0 +1,184 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "CertificationResult",
+  "run": {
+    "id": "0f1e2d3c-0000-4000-8000-000000000007",
+    "clusterId": "voyager-7",
+    "namespace": "nvcre-runs",
+    "name": "cert-retry",
+    "generation": 1,
+    "createdAt": "2026-09-16T09:00:00Z",
+    "terminalAt": "2026-09-16T09:40:00Z",
+    "certificationSpec": {
+      "target": {
+        "nodeSelector": {
+          "nvidia.com/gpu.product": "NVIDIA-GB200"
+        }
+      },
+      "categories": [
+        {
+          "domain": "communication",
+          "variant": "nccl-all-reduce"
+        }
+      ]
+    },
+    "specSha256": "170faaa882c1566f233dd54e7bb4b6fa80891e9d830048a531463efd63e639fe"
+  },
+  "verdict": {
+    "status": "PASSED",
+    "reason": "AllWorkflowsSucceeded",
+    "message": "All certification categories completed successfully",
+    "reductionPolicy": "final-iteration-any-failed",
+    "coverage": {
+      "targeted": 2,
+      "eligible": 2,
+      "tested": 2,
+      "outcomes": {
+        "passed": 2,
+        "failed": 0,
+        "inconclusive": 0,
+        "excluded": 0
+      }
+    }
+  },
+  "provenance": {
+    "controller": {
+      "version": "v0.2.0-test",
+      "imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000c0d"
+    },
+    "catalog": {
+      "revision": "catalog-revision-test"
+    },
+    "kubernetesVersion": "v1.36.4-test",
+    "workloadImages": []
+  },
+  "nodes": [
+    {
+      "id": "AAAAAAAA-0000-0000-0000-000000000001",
+      "hostnameAlias": "gpu-01",
+      "kubernetesUid": "11111111-0000-4000-8000-000000000001",
+      "systemUuid": "AAAAAAAA-0000-0000-0000-000000000001",
+      "gpuUuids": [],
+      "identityCompleteness": "system-only",
+      "gpu": {
+        "allocatableCount": 0
+      },
+      "labels": {},
+      "outcome": "Passed",
+      "reasons": [
+        {
+          "category": "communication/nccl-all-reduce",
+          "verdict": "Passed",
+          "attribution": "group"
+        }
+      ]
+    },
+    {
+      "id": "AAAAAAAA-0000-0000-0000-000000000002",
+      "hostnameAlias": "gpu-02",
+      "kubernetesUid": "11111111-0000-4000-8000-000000000002",
+      "systemUuid": "AAAAAAAA-0000-0000-0000-000000000002",
+      "gpuUuids": [],
+      "identityCompleteness": "system-only",
+      "gpu": {
+        "allocatableCount": 0
+      },
+      "labels": {},
+      "outcome": "Passed",
+      "reasons": [
+        {
+          "category": "communication/nccl-all-reduce",
+          "verdict": "Passed",
+          "attribution": "group"
+        }
+      ]
+    }
+  ],
+  "exclusions": [],
+  "categories": [
+    {
+      "domain": "communication",
+      "variant": "nccl-all-reduce",
+      "workflow": "cert-retry-communication-nccl-all-reduce",
+      "status": "Succeeded",
+      "validationFailed": false,
+      "testScale": "full-scale",
+      "detectedPlatform": "gcp",
+      "detectedGPUArchitecture": "gb200",
+      "nodesPerJob": 2,
+      "totalNodes": 2,
+      "totalGroups": 1,
+      "thresholds": {},
+      "appliedOverrides": [],
+      "diagnose": null,
+      "iterations": [
+        {
+          "index": 1,
+          "final": true,
+          "groups": [
+            {
+              "name": "group-0",
+              "nodes": [
+                "gpu-01",
+                "gpu-02"
+              ],
+              "domains": [],
+              "overflow": false,
+              "phase": "Succeeded",
+              "retries": 1,
+              "attempts": [
+                {
+                  "id": "communication/nccl-all-reduce/1/group-0/1",
+                  "index": 1,
+                  "jobName": "cert-retry-communication-nccl-all-reduce-group-0-iter-1",
+                  "jobFound": true,
+                  "startTime": "2026-09-16T09:20:00Z",
+                  "completionTime": "2026-09-16T09:38:00Z",
+                  "workloadStartTime": "2026-09-16T09:21:00Z",
+                  "restartCount": 0,
+                  "jobOutcome": "SUCCEEDED",
+                  "jobOutcomeReason": "WorkloadSucceeded",
+                  "validationFailed": null,
+                  "groupOutcome": "SUCCEEDED",
+                  "measurements": [],
+                  "thresholdEvaluations": [],
+                  "nodeVerdicts": [
+                    {
+                      "nodeId": "AAAAAAAA-0000-0000-0000-000000000001",
+                      "hostnameAlias": "gpu-01",
+                      "verdict": "Passed",
+                      "attribution": "group"
+                    },
+                    {
+                      "nodeId": "AAAAAAAA-0000-0000-0000-000000000002",
+                      "hostnameAlias": "gpu-02",
+                      "verdict": "Passed",
+                      "attribution": "group"
+                    }
+                  ],
+                  "failureEvidence": null
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "completeness": {
+    "state": "partial",
+    "gaps": [
+      {
+        "scope": "categories/communication/nccl-all-reduce/iterations/1/groups/group-0",
+        "code": "retried-attempts-missing",
+        "message": "group was retried 1 time(s); the earlier attempts' Jobs were deleted and only the final attempt is recorded",
+        "missingAttemptIndexes": [
+          0
+        ],
+        "affectedFields": [
+          "categories[].iterations[].groups[].attempts"
+        ]
+      }
+    ]
+  }
+}

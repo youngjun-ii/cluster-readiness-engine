@@ -1,0 +1,5 @@
+# The category's Workflow is gone (or was never readable). The record keeps
+# the category status the Certification recorded, names the missing Workflow
+# as a gap, and reports no nodes rather than inventing any.
+clusterId: voyager-7
+captureIdentity: true

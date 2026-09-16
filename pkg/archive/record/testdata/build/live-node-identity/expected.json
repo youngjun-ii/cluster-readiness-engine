@@ -1,0 +1,334 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "CertificationResult",
+  "run": {
+    "id": "0f1e2d3c-0000-4000-8000-00000000000a",
+    "clusterId": "voyager-7",
+    "namespace": "nvcre-runs",
+    "name": "cert-live",
+    "generation": 1,
+    "createdAt": "2026-09-16T09:00:00Z",
+    "terminalAt": "2026-09-16T09:30:00Z",
+    "certificationSpec": {
+      "target": {
+        "nodeSelector": {
+          "nvidia.com/gpu.product": "NVIDIA-GB200"
+        }
+      },
+      "categories": [
+        {
+          "domain": "communication",
+          "variant": "nccl-all-reduce"
+        }
+      ]
+    },
+    "specSha256": "170faaa882c1566f233dd54e7bb4b6fa80891e9d830048a531463efd63e639fe"
+  },
+  "verdict": {
+    "status": "FAILED",
+    "reason": "WorkflowFailed",
+    "message": "One or more certification categories failed",
+    "reductionPolicy": "final-iteration-any-failed",
+    "coverage": {
+      "targeted": 4,
+      "eligible": 4,
+      "tested": 3,
+      "outcomes": {
+        "passed": 1,
+        "failed": 2,
+        "inconclusive": 1,
+        "excluded": 0
+      }
+    }
+  },
+  "provenance": {
+    "controller": {
+      "version": "v0.2.0-test",
+      "imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000c0d"
+    },
+    "catalog": {
+      "revision": "catalog-revision-test"
+    },
+    "kubernetesVersion": "v1.36.4-test",
+    "workloadImages": []
+  },
+  "nodes": [
+    {
+      "id": "AAAAAAAA-0000-0000-0000-000000000001",
+      "hostnameAlias": "gpu-01",
+      "kubernetesUid": "11111111-0000-4000-8000-000000000001",
+      "systemUuid": "AAAAAAAA-0000-0000-0000-000000000001",
+      "gpuUuids": [],
+      "identityCompleteness": "system-only",
+      "gpu": {
+        "product": "NVIDIA-GB200",
+        "allocatableCount": 0
+      },
+      "labels": {
+        "nvidia.com/gpu.product": "NVIDIA-GB200"
+      },
+      "outcome": "Failed",
+      "reasons": [
+        {
+          "category": "communication/nccl-all-reduce",
+          "verdict": "Failed",
+          "reason": "HardwareFailureDetected",
+          "message": "node.spec.taints.exists(t, t.key == 'nvidia.com/gpu-unhealthy')",
+          "attribution": "node"
+        }
+      ]
+    },
+    {
+      "id": "11111111-0000-4000-8000-000000000002",
+      "hostnameAlias": "gpu-02",
+      "kubernetesUid": "11111111-0000-4000-8000-000000000002",
+      "gpuUuids": [],
+      "identityCompleteness": "kubernetes-only",
+      "gpu": {
+        "product": "NVIDIA-GB200",
+        "allocatableCount": 0
+      },
+      "labels": {
+        "nvidia.com/gpu.product": "NVIDIA-GB200"
+      },
+      "outcome": "Failed",
+      "reasons": [
+        {
+          "category": "communication/nccl-all-reduce",
+          "verdict": "Failed",
+          "reason": "WorkloadFailed",
+          "message": "first failed job: nccl-launcher",
+          "attribution": "group"
+        }
+      ]
+    },
+    {
+      "id": "AAAAAAAA-0000-0000-0000-000000000003",
+      "hostnameAlias": "gpu-03",
+      "kubernetesUid": "11111111-0000-4000-8000-000000000003",
+      "systemUuid": "AAAAAAAA-0000-0000-0000-000000000003",
+      "gpuUuids": [],
+      "identityCompleteness": "system-only",
+      "gpu": {
+        "allocatableCount": 0
+      },
+      "labels": {},
+      "outcome": "Passed",
+      "reasons": [
+        {
+          "category": "communication/nccl-all-reduce",
+          "verdict": "Passed",
+          "attribution": "group"
+        }
+      ]
+    },
+    {
+      "id": "gpu-04",
+      "hostnameAlias": "gpu-04",
+      "gpuUuids": [],
+      "identityCompleteness": "hostname-only",
+      "gpu": {
+        "allocatableCount": 0
+      },
+      "labels": {},
+      "outcome": "Inconclusive",
+      "reasons": [
+        {
+          "category": "communication/nccl-all-reduce",
+          "verdict": "Inconclusive",
+          "reason": "NotRun",
+          "message": "group phase was Pending when the run ended"
+        }
+      ]
+    }
+  ],
+  "exclusions": [],
+  "categories": [
+    {
+      "domain": "communication",
+      "variant": "nccl-all-reduce",
+      "workflow": "cert-live-communication-nccl-all-reduce",
+      "status": "Failed",
+      "validationFailed": false,
+      "testScale": "intra-node",
+      "detectedPlatform": "gcp",
+      "detectedGPUArchitecture": "gb200",
+      "nodesPerJob": 1,
+      "totalNodes": 3,
+      "totalGroups": 3,
+      "thresholds": {},
+      "appliedOverrides": [],
+      "diagnose": null,
+      "iterations": [
+        {
+          "index": 1,
+          "final": true,
+          "groups": [
+            {
+              "name": "group-0",
+              "nodes": [
+                "gpu-01",
+                "gpu-02"
+              ],
+              "domains": [],
+              "overflow": false,
+              "phase": "Failed",
+              "retries": 0,
+              "attempts": [
+                {
+                  "id": "communication/nccl-all-reduce/1/group-0/0",
+                  "index": 0,
+                  "jobName": "cert-live-communication-nccl-all-reduce-group-0-iter-1",
+                  "jobFound": true,
+                  "startTime": "2026-09-16T09:05:00Z",
+                  "completionTime": "2026-09-16T09:28:00Z",
+                  "workloadStartTime": null,
+                  "restartCount": 0,
+                  "jobOutcome": "FAILED",
+                  "jobOutcomeReason": "WorkloadFailed",
+                  "jobOutcomeMessage": "first failed job: nccl-launcher",
+                  "validationFailed": null,
+                  "groupOutcome": "FAILED",
+                  "measurements": [],
+                  "thresholdEvaluations": [],
+                  "nodeVerdicts": [
+                    {
+                      "nodeId": "AAAAAAAA-0000-0000-0000-000000000001",
+                      "hostnameAlias": "gpu-01",
+                      "verdict": "Failed",
+                      "reason": "HardwareFailureDetected",
+                      "message": "node.spec.taints.exists(t, t.key == 'nvidia.com/gpu-unhealthy')",
+                      "attribution": "node"
+                    },
+                    {
+                      "nodeId": "11111111-0000-4000-8000-000000000002",
+                      "hostnameAlias": "gpu-02",
+                      "verdict": "Failed",
+                      "reason": "WorkloadFailed",
+                      "message": "first failed job: nccl-launcher",
+                      "attribution": "group"
+                    }
+                  ],
+                  "failureEvidence": {
+                    "podName": "nccl-launcher-0",
+                    "nodeName": "gpu-02",
+                    "exitCode": 1,
+                    "reason": "Error",
+                    "logTailIncluded": true,
+                    "logTailBytes": 66,
+                    "logTail": "NCCL WARN Cuda failure 'an illegal memory access was encountered'\n"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "group-1",
+              "nodes": [
+                "gpu-03"
+              ],
+              "domains": [],
+              "overflow": false,
+              "phase": "Succeeded",
+              "retries": 0,
+              "attempts": [
+                {
+                  "id": "communication/nccl-all-reduce/1/group-1/0",
+                  "index": 0,
+                  "jobName": "cert-live-communication-nccl-all-reduce-group-1-iter-1",
+                  "jobFound": false,
+                  "startTime": "2026-09-16T09:05:00Z",
+                  "completionTime": "2026-09-16T09:20:00Z",
+                  "workloadStartTime": null,
+                  "restartCount": 0,
+                  "jobOutcome": "UNKNOWN",
+                  "validationFailed": null,
+                  "groupOutcome": "SUCCEEDED",
+                  "measurements": [],
+                  "thresholdEvaluations": [],
+                  "nodeVerdicts": [
+                    {
+                      "nodeId": "AAAAAAAA-0000-0000-0000-000000000003",
+                      "hostnameAlias": "gpu-03",
+                      "verdict": "Passed",
+                      "attribution": "group"
+                    }
+                  ],
+                  "failureEvidence": null
+                }
+              ]
+            },
+            {
+              "name": "group-2",
+              "nodes": [
+                "gpu-04"
+              ],
+              "domains": [],
+              "overflow": false,
+              "phase": "Pending",
+              "retries": 0,
+              "attempts": [
+                {
+                  "id": "communication/nccl-all-reduce/1/group-2/0",
+                  "index": 0,
+                  "jobFound": false,
+                  "startTime": null,
+                  "completionTime": null,
+                  "workloadStartTime": null,
+                  "restartCount": 0,
+                  "jobOutcome": "UNKNOWN",
+                  "validationFailed": null,
+                  "groupOutcome": "INCONCLUSIVE",
+                  "measurements": [],
+                  "thresholdEvaluations": [],
+                  "nodeVerdicts": [
+                    {
+                      "nodeId": "gpu-04",
+                      "hostnameAlias": "gpu-04",
+                      "verdict": "Inconclusive",
+                      "reason": "NotRun",
+                      "message": "group phase was Pending when the run ended"
+                    }
+                  ],
+                  "failureEvidence": null
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "completeness": {
+    "state": "partial",
+    "gaps": [
+      {
+        "scope": "categories/communication/nccl-all-reduce/iterations/1/groups/group-1/attempts/0",
+        "code": "job-deleted",
+        "message": "Job cert-live-communication-nccl-all-reduce-group-1-iter-1 no longer exists; outcome, measurements and evidence are unavailable",
+        "affectedFields": [
+          "categories[].iterations[].groups[].attempts[].jobOutcome",
+          "categories[].iterations[].groups[].attempts[].measurements",
+          "categories[].iterations[].groups[].attempts[].failureEvidence"
+        ]
+      },
+      {
+        "scope": "categories/communication/nccl-all-reduce/iterations/1/groups/group-2/attempts/0",
+        "code": "group-not-run",
+        "message": "group never reached a terminal phase",
+        "affectedFields": [
+          "categories[].iterations[].groups[].attempts[].nodeVerdicts"
+        ]
+      },
+      {
+        "scope": "nodes",
+        "code": "node-identity-not-captured",
+        "message": "no node-identity snapshot was captured when the target was resolved; identity was read from the live Node objects at emit time and may describe a replacement node",
+        "affectedFields": [
+          "nodes[].id",
+          "nodes[].kubernetesUid",
+          "nodes[].systemUuid"
+        ]
+      }
+    ]
+  }
+}

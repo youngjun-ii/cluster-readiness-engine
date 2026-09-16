@@ -1,0 +1,14 @@
+# Rule 2 with the one reachable trigger: diagnose. Only the final round's
+# groups (the confirmation tests) survive on the Workflow, so the record must
+# be partial with a diagnose-multi-round gap, and the per-node outcomes must
+# come from the accumulated DiagnoseStatus (healthyNodes) plus the failed-nodes
+# record (confirmed faulty), not from the final round's group phases.
+clusterId: voyager-7
+captureIdentity: true
+failedNodes:
+  - configMap: failed-nodes-0f1e2d3c
+    namespace: nvcre-runs
+    nodes:
+      - name: gpu-04
+        reason: WorkloadFailed
+        message: "Confirmed faulty by diagnose confirmation stage"

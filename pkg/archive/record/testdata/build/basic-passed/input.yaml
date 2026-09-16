@@ -1,0 +1,6 @@
+# Happy path: one category, two groups, every Job succeeded, thresholds met,
+# bandwidth frozen, node identity captured at target resolution, and a pod
+# still around to resolve the workload image digest from.
+clusterId: voyager-7
+includeFailureLog: false
+captureIdentity: true

@@ -1,0 +1,7 @@
+# Rule 1, the timeout gap: the Workflow's timeoutPerJob path sets Failed on
+# the Job directly without populating status.failedNodes, so no failed-nodes
+# ConfigMap entry is ever written. The group is Failed, and every node in it
+# must be Failed with the Job's JobTimedOut reason -- a ConfigMap-derived
+# builder would report them as passed under a FAILED run.
+clusterId: voyager-7
+captureIdentity: true

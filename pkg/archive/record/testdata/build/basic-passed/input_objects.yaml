@@ -1,0 +1,336 @@
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Certification
+metadata:
+  name: cert-basic
+  namespace: nvcre-runs
+  uid: 0f1e2d3c-0000-4000-8000-000000000001
+  generation: 1
+  creationTimestamp: "2026-09-16T08:00:00Z"
+spec:
+  target:
+    nodeSelector:
+      nvidia.com/gpu.product: NVIDIA-GB200
+  nodesPerJob: 2
+  categories:
+    - domain: communication
+      variant: nccl-all-reduce
+      options:
+        thresholds:
+          busBandwidthGBps: "value >= 100"
+status:
+  conditions:
+    - type: InProgress
+      status: "False"
+      reason: NotApplicable
+      lastTransitionTime: "2026-09-16T08:30:00Z"
+    - type: Succeeded
+      status: "True"
+      reason: AllWorkflowsSucceeded
+      message: All certification categories completed successfully
+      lastTransitionTime: "2026-09-16T08:30:00Z"
+    - type: Failed
+      status: "False"
+      reason: NotApplicable
+      lastTransitionTime: "2026-09-16T08:00:00Z"
+  categoryStatuses:
+    - domain: communication
+      variant: nccl-all-reduce
+      status: Succeeded
+      workflowRef:
+        name: cert-basic-communication-nccl-all-reduce
+        namespace: nvcre-runs
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Workflow
+metadata:
+  name: cert-basic-communication-nccl-all-reduce
+  namespace: nvcre-runs
+  annotations:
+    nvcre.nvidia.com/requested-test-scale: full-scale
+spec:
+  jobTemplate:
+    spec:
+      workload:
+        trainJob:
+          runtimeRef:
+            kind: TrainingRuntime
+            name: nccl-all-reduce
+          trainer:
+            image: nvcr.io/nvidia/pytorch:26.01-py3
+      thresholds:
+        busBandwidthGBps: "value >= 100"
+  orchestration:
+    iterations: 1
+  validation:
+    performance:
+      enabled: true
+      thresholds:
+        thresholds:
+          busBandwidthGBps: "value >= 100"
+status:
+  conditions:
+    - type: Succeeded
+      status: "True"
+      reason: AllGroupsSucceeded
+      message: All groups succeeded
+      lastTransitionTime: "2026-09-16T08:29:00Z"
+  orchestration:
+    totalNodes: 4
+    nodesPerJob: 2
+    totalGroups: 2
+    currentIteration: 1
+    completedIterations: 1
+    detectedPlatform: gcp
+    detectedGPUArchitecture: gb200
+    appliedOverrides:
+      - index: 0
+        when: "platform=gcp, gpuArchitecture=gb200"
+        patches: "jobTemplate, 2 dependencies"
+    groups:
+      - name: group-0
+        nodes: [gpu-02, gpu-01]
+        domains: [clique-a]
+        phase: Succeeded
+        jobRef:
+          apiVersion: nvcre.nvidia.com/v1alpha1
+          kind: Job
+          name: cert-basic-communication-nccl-all-reduce-group-0-iter-1
+          namespace: nvcre-runs
+        startTime: "2026-09-16T08:05:00Z"
+        completionTime: "2026-09-16T08:15:00Z"
+      - name: group-1
+        nodes: [gpu-03, gpu-04]
+        domains: [clique-b]
+        phase: Succeeded
+        jobRef:
+          apiVersion: nvcre.nvidia.com/v1alpha1
+          kind: Job
+          name: cert-basic-communication-nccl-all-reduce-group-1-iter-1
+          namespace: nvcre-runs
+        startTime: "2026-09-16T08:05:00Z"
+        completionTime: "2026-09-16T08:16:00Z"
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Job
+metadata:
+  name: cert-basic-communication-nccl-all-reduce-group-0-iter-1
+  namespace: nvcre-runs
+  labels:
+    nvcre.nvidia.com/workflow: cert-basic-communication-nccl-all-reduce
+    nvcre.nvidia.com/group: group-0
+  annotations:
+    nvcre.nvidia.com/group-nodes: gpu-02,gpu-01
+spec:
+  workload:
+    trainJob:
+      runtimeRef:
+        kind: TrainingRuntime
+        name: nccl-all-reduce
+  thresholds:
+    busBandwidthGBps: "value >= 100"
+status:
+  workloadStartTime: "2026-09-16T08:06:00Z"
+  conditions:
+    - type: InProgress
+      status: "False"
+      reason: WorkloadSucceeded
+      lastTransitionTime: "2026-09-16T08:15:00Z"
+    - type: Succeeded
+      status: "True"
+      reason: WorkloadSucceeded
+      message: Workload completed successfully
+      lastTransitionTime: "2026-09-16T08:15:00Z"
+    - type: Failed
+      status: "False"
+      reason: NotApplicable
+      lastTransitionTime: "2026-09-16T08:05:00Z"
+    - type: ValidationFailed
+      status: "False"
+      reason: ThresholdsMet
+      message: All thresholds satisfied
+      lastTransitionTime: "2026-09-16T08:15:30Z"
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Job
+metadata:
+  name: cert-basic-communication-nccl-all-reduce-group-1-iter-1
+  namespace: nvcre-runs
+  labels:
+    nvcre.nvidia.com/workflow: cert-basic-communication-nccl-all-reduce
+    nvcre.nvidia.com/group: group-1
+  annotations:
+    nvcre.nvidia.com/group-nodes: gpu-03,gpu-04
+spec:
+  workload:
+    trainJob:
+      runtimeRef:
+        kind: TrainingRuntime
+        name: nccl-all-reduce
+  thresholds:
+    busBandwidthGBps: "value >= 100"
+status:
+  workloadStartTime: "2026-09-16T08:06:00Z"
+  conditions:
+    - type: Succeeded
+      status: "True"
+      reason: WorkloadSucceeded
+      message: Workload completed successfully
+      lastTransitionTime: "2026-09-16T08:16:00Z"
+    - type: ValidationFailed
+      status: "False"
+      reason: ThresholdsMet
+      message: All thresholds satisfied
+      lastTransitionTime: "2026-09-16T08:16:30Z"
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: BandwidthMeasurement
+metadata:
+  name: cert-basic-communication-nccl-all-reduce-group-0-iter-1-bandwidth
+  namespace: nvcre-runs
+spec:
+  jobRef:
+    kind: Job
+    name: cert-basic-communication-nccl-all-reduce-group-0-iter-1
+  logProfileRef: nccl-all-reduce
+  testType: all_reduce
+status:
+  startTime: "2026-09-16T08:06:00Z"
+  completionTime: "2026-09-16T08:15:00Z"
+  results:
+    - sizeBytes: 1073741824
+      algBW: "245.10"
+      busBW: "459.56"
+      samples: 10
+    - sizeBytes: 8
+      algBW: "0.00"
+      busBW: "0.00"
+      samples: 10
+  conditions:
+    - type: Measuring
+      status: "False"
+      reason: JobCompleted
+      lastTransitionTime: "2026-09-16T08:15:00Z"
+    - type: Complete
+      status: "True"
+      reason: JobSucceeded
+      message: Measurement complete
+      lastTransitionTime: "2026-09-16T08:15:00Z"
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: BandwidthMeasurement
+metadata:
+  name: cert-basic-communication-nccl-all-reduce-group-1-iter-1-bandwidth
+  namespace: nvcre-runs
+spec:
+  jobRef:
+    kind: Job
+    name: cert-basic-communication-nccl-all-reduce-group-1-iter-1
+  logProfileRef: nccl-all-reduce
+  testType: all_reduce
+status:
+  startTime: "2026-09-16T08:06:00Z"
+  completionTime: "2026-09-16T08:16:00Z"
+  results:
+    - sizeBytes: 1073741824
+      algBW: "240.00"
+      busBW: "450.00"
+      samples: 10
+  conditions:
+    - type: Complete
+      status: "True"
+      reason: JobSucceeded
+      message: Measurement complete
+      lastTransitionTime: "2026-09-16T08:16:00Z"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cert-basic-communication-nccl-all-reduce-group-0-iter-1-launcher-0
+  namespace: nvcre-runs
+  labels:
+    nvcre.nvidia.com/job: cert-basic-communication-nccl-all-reduce-group-0-iter-1
+spec:
+  nodeName: gpu-01
+  containers:
+    - name: node
+      image: nvcr.io/nvidia/pytorch:26.01-py3
+status:
+  phase: Succeeded
+  containerStatuses:
+    - name: node
+      image: nvcr.io/nvidia/pytorch:26.01-py3
+      imageID: nvcr.io/nvidia/pytorch@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+      ready: false
+      restartCount: 0
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-01
+  uid: 11111111-0000-4000-8000-000000000001
+  labels:
+    kubernetes.io/hostname: gpu-01
+    nvidia.com/gpu.product: NVIDIA-GB200
+    nvidia.com/gpu.clique: clique-a
+    topology.kubernetes.io/zone: us-central1-a
+    node.kubernetes.io/instance-type: a4x-highgpu-4g
+    beta.kubernetes.io/os: linux
+spec:
+  providerID: gce://proj/us-central1-a/gpu-01
+status:
+  allocatable:
+    nvidia.com/gpu: "4"
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000001
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-02
+  uid: 11111111-0000-4000-8000-000000000002
+  labels:
+    kubernetes.io/hostname: gpu-02
+    nvidia.com/gpu.product: NVIDIA-GB200
+    nvidia.com/gpu.clique: clique-a
+    topology.kubernetes.io/zone: us-central1-a
+spec:
+  providerID: gce://proj/us-central1-a/gpu-02
+status:
+  allocatable:
+    nvidia.com/gpu: "4"
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000002
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-03
+  uid: 11111111-0000-4000-8000-000000000003
+  labels:
+    kubernetes.io/hostname: gpu-03
+    nvidia.com/gpu.product: NVIDIA-GB200
+    nvidia.com/gpu.clique: clique-b
+spec:
+  providerID: gce://proj/us-central1-a/gpu-03
+status:
+  allocatable:
+    nvidia.com/gpu: "4"
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000003
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-04
+  uid: 11111111-0000-4000-8000-000000000004
+  labels:
+    kubernetes.io/hostname: gpu-04
+    nvidia.com/gpu.product: NVIDIA-GB200
+    nvidia.com/gpu.clique: clique-b
+spec:
+  providerID: gce://proj/us-central1-a/gpu-04
+status:
+  allocatable:
+    nvidia.com/gpu: "4"
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000004

@@ -1,0 +1,34 @@
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Certification
+metadata:
+  name: cert-missing-wf
+  namespace: nvcre-runs
+  uid: 0f1e2d3c-0000-4000-8000-000000000009
+  generation: 1
+  creationTimestamp: "2026-09-16T09:00:00Z"
+spec:
+  target:
+    nodeSelector:
+      nvidia.com/gpu.product: NVIDIA-GB200
+  categories:
+    - domain: communication
+      variant: nccl-all-reduce
+    - domain: diagnostics
+      variant: dcgm-level4
+status:
+  conditions:
+    - type: Failed
+      status: "True"
+      reason: WorkflowFailed
+      message: One or more certification categories failed
+      lastTransitionTime: "2026-09-16T09:30:00Z"
+  categoryStatuses:
+    - domain: communication
+      variant: nccl-all-reduce
+      status: Failed
+      workflowRef:
+        name: cert-missing-wf-communication-nccl-all-reduce
+        namespace: nvcre-runs
+    - domain: diagnostics
+      variant: dcgm-level4
+      status: Pending

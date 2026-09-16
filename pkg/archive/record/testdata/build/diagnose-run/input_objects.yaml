@@ -1,0 +1,165 @@
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Certification
+metadata:
+  name: cert-diagnose
+  namespace: nvcre-runs
+  uid: 0f1e2d3c-0000-4000-8000-000000000004
+  generation: 1
+  creationTimestamp: "2026-09-16T09:00:00Z"
+spec:
+  target:
+    nodeSelector:
+      nvidia.com/gpu.product: NVIDIA-GB200
+  testScale: diagnose
+  categories:
+    - domain: communication
+      variant: nccl-all-reduce
+status:
+  conditions:
+    - type: Failed
+      status: "True"
+      reason: WorkflowFailed
+      message: One or more certification categories failed
+      lastTransitionTime: "2026-09-16T09:50:00Z"
+  categoryStatuses:
+    - domain: communication
+      variant: nccl-all-reduce
+      status: Failed
+      workflowRef:
+        name: cert-diagnose-communication-nccl-all-reduce
+        namespace: nvcre-runs
+      failedNodesRef:
+        kind: ConfigMap
+        name: failed-nodes-0f1e2d3c
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Workflow
+metadata:
+  name: cert-diagnose-communication-nccl-all-reduce
+  namespace: nvcre-runs
+  annotations:
+    nvcre.nvidia.com/requested-test-scale: diagnose
+spec:
+  jobTemplate:
+    spec:
+      workload:
+        trainJob:
+          runtimeRef:
+            kind: TrainingRuntime
+            name: nccl-all-reduce
+  orchestration:
+    iterations: 1
+    diagnose:
+      minGroupSize: 2
+      topologyKey: nvidia.com/gpu.clique
+status:
+  conditions:
+    - type: Failed
+      status: "True"
+      reason: DiagnoseComplete
+      message: "Diagnose complete: 1 faulty node(s) confirmed"
+      lastTransitionTime: "2026-09-16T09:49:00Z"
+  failedNodesRef:
+    kind: ConfigMap
+    name: failed-nodes-0f1e2d3c
+  orchestration:
+    totalNodes: 4
+    nodesPerJob: 2
+    totalGroups: 1
+    currentIteration: 1
+    completedIterations: 3
+    detectedPlatform: gcp
+    detectedGPUArchitecture: gb200
+    diagnose:
+      stage: complete
+      round: 3
+      healthyNodes: [gpu-01, gpu-02, gpu-03]
+      suspectNodes: []
+      screeningResults:
+        clique-a:
+          nodes: [gpu-01, gpu-02]
+          passed: true
+        clique-b:
+          nodes: [gpu-03, gpu-04]
+          passed: false
+    groups:
+      - name: confirm-gpu-04
+        nodes: [gpu-04, gpu-01]
+        phase: Failed
+        jobRef:
+          apiVersion: nvcre.nvidia.com/v1alpha1
+          kind: Job
+          name: cert-diagnose-communication-nccl-all-reduce-confirm-gpu-04-iter-3
+          namespace: nvcre-runs
+        startTime: "2026-09-16T09:40:00Z"
+        completionTime: "2026-09-16T09:48:00Z"
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Job
+metadata:
+  name: cert-diagnose-communication-nccl-all-reduce-confirm-gpu-04-iter-3
+  namespace: nvcre-runs
+  labels:
+    nvcre.nvidia.com/workflow: cert-diagnose-communication-nccl-all-reduce
+spec:
+  workload:
+    trainJob:
+      runtimeRef:
+        kind: TrainingRuntime
+        name: nccl-all-reduce
+status:
+  workloadStartTime: "2026-09-16T09:41:00Z"
+  conditions:
+    - type: Failed
+      status: "True"
+      reason: WorkloadFailed
+      message: "first failed job: confirm-gpu-04-launcher"
+      lastTransitionTime: "2026-09-16T09:47:00Z"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-01
+  uid: 11111111-0000-4000-8000-000000000001
+  labels:
+    nvidia.com/gpu.product: NVIDIA-GB200
+    nvidia.com/gpu.clique: clique-a
+status:
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000001
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-02
+  uid: 11111111-0000-4000-8000-000000000002
+  labels:
+    nvidia.com/gpu.product: NVIDIA-GB200
+    nvidia.com/gpu.clique: clique-a
+status:
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000002
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-03
+  uid: 11111111-0000-4000-8000-000000000003
+  labels:
+    nvidia.com/gpu.product: NVIDIA-GB200
+    nvidia.com/gpu.clique: clique-b
+status:
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000003
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-04
+  uid: 11111111-0000-4000-8000-000000000004
+  labels:
+    nvidia.com/gpu.product: NVIDIA-GB200
+    nvidia.com/gpu.clique: clique-b
+status:
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000004

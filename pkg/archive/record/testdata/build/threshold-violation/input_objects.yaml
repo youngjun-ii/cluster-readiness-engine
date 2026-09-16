@@ -1,0 +1,180 @@
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Certification
+metadata:
+  name: cert-threshold
+  namespace: nvcre-runs
+  uid: 0f1e2d3c-0000-4000-8000-000000000003
+  generation: 1
+  creationTimestamp: "2026-09-16T09:00:00Z"
+spec:
+  target:
+    nodeSelector:
+      nvidia.com/gpu.product: NVIDIA-GB200
+  categories:
+    - domain: communication
+      variant: nccl-all-reduce
+      options:
+        thresholds:
+          busBandwidthGBps: "value >= 100"
+status:
+  conditions:
+    - type: Failed
+      status: "True"
+      reason: WorkflowFailed
+      message: One or more certification categories failed
+      lastTransitionTime: "2026-09-16T09:20:00Z"
+  categoryStatuses:
+    - domain: communication
+      variant: nccl-all-reduce
+      status: Failed
+      workflowRef:
+        name: cert-threshold-communication-nccl-all-reduce
+        namespace: nvcre-runs
+      failedNodesRef:
+        kind: ConfigMap
+        name: failed-nodes-0f1e2d3c
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Workflow
+metadata:
+  name: cert-threshold-communication-nccl-all-reduce
+  namespace: nvcre-runs
+spec:
+  jobTemplate:
+    spec:
+      workload:
+        trainJob:
+          runtimeRef:
+            kind: TrainingRuntime
+            name: nccl-all-reduce
+      thresholds:
+        busBandwidthGBps: "value >= 100"
+  orchestration:
+    iterations: 1
+  validation:
+    performance:
+      enabled: true
+      thresholds:
+        thresholds:
+          busBandwidthGBps: "value >= 100"
+status:
+  conditions:
+    - type: Failed
+      status: "True"
+      reason: GroupsFailed
+      message: "1 of 1 groups failed"
+      lastTransitionTime: "2026-09-16T09:19:00Z"
+    - type: ValidationFailed
+      status: "True"
+      reason: ThresholdViolation
+      message: "busBandwidthGBps: 80.5 does not satisfy value >= 100"
+      lastTransitionTime: "2026-09-16T09:19:00Z"
+  failedNodesRef:
+    kind: ConfigMap
+    name: failed-nodes-0f1e2d3c
+  orchestration:
+    totalNodes: 2
+    nodesPerJob: 2
+    totalGroups: 1
+    currentIteration: 1
+    completedIterations: 1
+    detectedPlatform: gcp
+    detectedGPUArchitecture: gb200
+    groups:
+      - name: group-0
+        nodes: [gpu-01, gpu-02]
+        phase: Failed
+        jobRef:
+          apiVersion: nvcre.nvidia.com/v1alpha1
+          kind: Job
+          name: cert-threshold-communication-nccl-all-reduce-group-0-iter-1
+          namespace: nvcre-runs
+        startTime: "2026-09-16T09:05:00Z"
+        completionTime: "2026-09-16T09:19:00Z"
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Job
+metadata:
+  name: cert-threshold-communication-nccl-all-reduce-group-0-iter-1
+  namespace: nvcre-runs
+  labels:
+    nvcre.nvidia.com/workflow: cert-threshold-communication-nccl-all-reduce
+spec:
+  workload:
+    trainJob:
+      runtimeRef:
+        kind: TrainingRuntime
+        name: nccl-all-reduce
+  thresholds:
+    busBandwidthGBps: "value >= 100"
+status:
+  workloadStartTime: "2026-09-16T09:06:00Z"
+  failedNodes:
+    - name: gpu-01
+      reason: ThresholdViolation
+      message: "busBandwidthGBps: 80.5 does not satisfy value >= 100"
+    - name: gpu-02
+      reason: ThresholdViolation
+      message: "busBandwidthGBps: 80.5 does not satisfy value >= 100"
+  conditions:
+    - type: Succeeded
+      status: "True"
+      reason: WorkloadSucceeded
+      message: Workload completed successfully
+      lastTransitionTime: "2026-09-16T09:18:00Z"
+    - type: ValidationFailed
+      status: "True"
+      reason: ThresholdViolation
+      message: "busBandwidthGBps: 80.5 does not satisfy value >= 100"
+      lastTransitionTime: "2026-09-16T09:18:30Z"
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: BandwidthMeasurement
+metadata:
+  name: cert-threshold-communication-nccl-all-reduce-group-0-iter-1-bandwidth
+  namespace: nvcre-runs
+spec:
+  jobRef:
+    kind: Job
+    name: cert-threshold-communication-nccl-all-reduce-group-0-iter-1
+  logProfileRef: nccl-all-reduce
+  testType: all_reduce
+status:
+  startTime: "2026-09-16T09:06:00Z"
+  completionTime: "2026-09-16T09:18:00Z"
+  results:
+    - sizeBytes: 1073741824
+      algBW: "43.00"
+      busBW: "80.50"
+      samples: 10
+  conditions:
+    - type: Complete
+      status: "True"
+      reason: JobSucceeded
+      lastTransitionTime: "2026-09-16T09:18:00Z"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-01
+  uid: 11111111-0000-4000-8000-000000000001
+  labels:
+    nvidia.com/gpu.product: NVIDIA-GB200
+status:
+  allocatable:
+    nvidia.com/gpu: "4"
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000001
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-02
+  uid: 11111111-0000-4000-8000-000000000002
+  labels:
+    nvidia.com/gpu.product: NVIDIA-GB200
+status:
+  allocatable:
+    nvidia.com/gpu: "4"
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000002

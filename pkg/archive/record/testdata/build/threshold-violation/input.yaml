@@ -1,0 +1,16 @@
+# Rule 3: a threshold miss is not a Job failure. The Job has Succeeded=True and
+# ValidationFailed=True, the group is Failed, and nothing wrote a failureLog.
+# Expect jobOutcome SUCCEEDED, validationFailed true, groupOutcome FAILED,
+# failureEvidence null, and the threshold evaluation showing the miss.
+clusterId: voyager-7
+captureIdentity: true
+failedNodes:
+  - configMap: failed-nodes-0f1e2d3c
+    namespace: nvcre-runs
+    nodes:
+      - name: gpu-01
+        reason: ThresholdViolation
+        message: "busBandwidthGBps: 80.5 does not satisfy value >= 100"
+      - name: gpu-02
+        reason: ThresholdViolation
+        message: "busBandwidthGBps: 80.5 does not satisfy value >= 100"

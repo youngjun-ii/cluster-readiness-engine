@@ -1,0 +1,7 @@
+# Rule 4: measurements are recorded as observed. The bandwidth measurement is
+# still Measuring (no Complete=True) at emit time, so frozen is false but the
+# values are kept. The goodput measurement is not frozen either, and because
+# goodput-derived thresholds are only evaluated against frozen values, its
+# threshold row has no measured value.
+clusterId: voyager-7
+captureIdentity: true

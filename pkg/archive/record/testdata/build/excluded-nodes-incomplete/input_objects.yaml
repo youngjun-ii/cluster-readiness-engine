@@ -1,0 +1,132 @@
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Certification
+metadata:
+  name: cert-excluded
+  namespace: nvcre-runs
+  uid: 0f1e2d3c-0000-4000-8000-000000000005
+  generation: 1
+  creationTimestamp: "2026-09-16T09:00:00Z"
+spec:
+  target:
+    nodeSelector:
+      nvidia.com/gpu.product: NVIDIA-GB200
+  categories:
+    - domain: communication
+      variant: nccl-all-reduce
+status:
+  conditions:
+    - type: Succeeded
+      status: "True"
+      reason: AllWorkflowsSucceeded
+      message: All certification categories completed successfully
+      lastTransitionTime: "2026-09-16T09:30:00Z"
+  categoryStatuses:
+    - domain: communication
+      variant: nccl-all-reduce
+      status: Succeeded
+      workflowRef:
+        name: cert-excluded-communication-nccl-all-reduce
+        namespace: nvcre-runs
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Workflow
+metadata:
+  name: cert-excluded-communication-nccl-all-reduce
+  namespace: nvcre-runs
+spec:
+  jobTemplate:
+    spec:
+      workload:
+        trainJob:
+          runtimeRef:
+            kind: TrainingRuntime
+            name: nccl-all-reduce
+  orchestration:
+    iterations: 1
+status:
+  conditions:
+    - type: Succeeded
+      status: "True"
+      reason: AllGroupsSucceeded
+      lastTransitionTime: "2026-09-16T09:29:00Z"
+  orchestration:
+    totalNodes: 2
+    nodesPerJob: 2
+    totalGroups: 1
+    currentIteration: 1
+    completedIterations: 1
+    detectedPlatform: gcp
+    detectedGPUArchitecture: gb200
+    excludedNodes: [gpu-03, gpu-04]
+    exclusionReason: "1 node(s) matched the target but were unschedulable (cordoned): gpu-03. 1 node(s) matched the target but have insufficient GPU capacity, the workload requests 4 nvidia.com/gpu per node: gpu-04 has 2"
+    groups:
+      - name: group-0
+        nodes: [gpu-01, gpu-02]
+        phase: Succeeded
+        jobRef:
+          apiVersion: nvcre.nvidia.com/v1alpha1
+          kind: Job
+          name: cert-excluded-communication-nccl-all-reduce-group-0-iter-1
+          namespace: nvcre-runs
+        startTime: "2026-09-16T09:05:00Z"
+        completionTime: "2026-09-16T09:28:00Z"
+---
+apiVersion: nvcre.nvidia.com/v1alpha1
+kind: Job
+metadata:
+  name: cert-excluded-communication-nccl-all-reduce-group-0-iter-1
+  namespace: nvcre-runs
+  labels:
+    nvcre.nvidia.com/workflow: cert-excluded-communication-nccl-all-reduce
+spec:
+  workload:
+    trainJob:
+      runtimeRef:
+        kind: TrainingRuntime
+        name: nccl-all-reduce
+status:
+  conditions:
+    - type: Succeeded
+      status: "True"
+      reason: WorkloadSucceeded
+      lastTransitionTime: "2026-09-16T09:28:00Z"
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-01
+  uid: 11111111-0000-4000-8000-000000000001
+status:
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000001
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-02
+  uid: 11111111-0000-4000-8000-000000000002
+status:
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000002
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-03
+  uid: 11111111-0000-4000-8000-000000000003
+spec:
+  unschedulable: true
+status:
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000003
+---
+apiVersion: v1
+kind: Node
+metadata:
+  name: gpu-04
+  uid: 11111111-0000-4000-8000-000000000004
+status:
+  allocatable:
+    nvidia.com/gpu: "2"
+  nodeInfo:
+    systemUUID: AAAAAAAA-0000-0000-0000-000000000004
