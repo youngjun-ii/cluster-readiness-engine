@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Two dependencies describing themselves with the same `app` label, as the
+# communication entries and the GB200 ComputeDomain lib do. The shared value
+# names no dependency, so it must not become a rename key: it also names the
+# LogProfile the job's bandwidthMeasurement refers to, and suffixing it points
+# the measurement at a profile that does not exist.
+deps:
+- raw: '{"apiVersion":"trainer.kubeflow.org/v1alpha1","kind":"TrainingRuntime","metadata":{"name":"nccl-loopback-runtime","labels":{"app":"nccl-loopback"}},"spec":{}}'
+- raw: '{"apiVersion":"resource.nvidia.com/v1beta1","kind":"ComputeDomain","metadata":{"name":"nccl-loopback-compute-domain","labels":{"app":"nccl-loopback"}},"spec":{"channel":{"resourceClaimTemplate":{"name":"nccl-loopback-channel"}}}}'

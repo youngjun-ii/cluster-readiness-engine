@@ -26,6 +26,9 @@ const (
 	scopeJob = "job"
 	kindPVC  = "PersistentVolumeClaim"
 
+	// keyLabels is the object field holding a resource's labels.
+	keyLabels = "labels"
+
 	// labelWorkflowTracking is the tracking label stamped on every dependency
 	// resource the Workflow controller creates.
 	labelWorkflowTracking = "nvcre.nvidia.com/workflow"
@@ -144,7 +147,15 @@ func detectCrossRefs(jobDeps []nvcrev1alpha1.DependencySpec) map[string]bool {
 	for _, dep := range jobDeps {
 		// Track unique strings per dep to avoid counting duplicates within one dep
 		seen := make(map[string]bool)
-		for _, s := range collectAllStrings(dep.Raw) {
+		// Labels and annotations are excluded: a value that merely describes a
+		// resource is not a reference to one. Counting them promoted an `app`
+		// label shared by two dependencies into a rename key, which then
+		// rewrote every occurrence of that string in the job spec — including a
+		// logProfileRef naming a LogProfile that is not a dependency at all,
+		// leaving it pointing at a name that does not exist. A string that IS a
+		// dependency's metadata.name is still suffixed everywhere it appears,
+		// labels included; that is handled by the caller, not here.
+		for _, s := range collectRefStrings(dep.Raw) {
 			if seen[s] || !isResourceName(s) || depNames[s] {
 				continue
 			}
@@ -593,6 +604,44 @@ func (r *WorkflowReconciler) cleanupScopedDependencies(ctx context.Context, work
 }
 
 // collectAllStrings recursively walks a JSON value and collects all string values.
+// descriptiveKeys hold values that describe a resource rather than reference
+// another one, so a name-shaped string under them is not a cross-reference.
+var descriptiveKeys = map[string]bool{
+	keyLabels:     true,
+	"annotations": true,
+	"matchLabels": true,
+}
+
+// collectRefStrings is collectAllStrings without the values that only describe
+// a resource. See detectCrossRefs for why that distinction matters.
+func collectRefStrings(data []byte) []string {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	var result []string
+	walkRefStrings(raw, &result)
+	return result
+}
+
+func walkRefStrings(v any, result *[]string) {
+	switch val := v.(type) {
+	case string:
+		*result = append(*result, val)
+	case map[string]any:
+		for key, child := range val {
+			if descriptiveKeys[key] {
+				continue
+			}
+			walkRefStrings(child, result)
+		}
+	case []any:
+		for _, child := range val {
+			walkRefStrings(child, result)
+		}
+	}
+}
+
 func collectAllStrings(data []byte) []string {
 	var raw any
 	if err := json.Unmarshal(data, &raw); err != nil {
