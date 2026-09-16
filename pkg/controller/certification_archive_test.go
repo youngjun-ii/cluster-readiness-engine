@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -22,12 +24,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/yaml"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/record"
-	"github.com/NVIDIA/cluster-readiness-engine/pkg/testutil"
 )
 
 // archiveTestInput drives one emit scenario. The Certification is built here
@@ -76,126 +76,362 @@ const (
 	archiveTestUploadURL = "https://storage.googleapis.com/upload"
 )
 
-// archiveTestOutput is the golden shape for one case.
+// archiveTestOutput is what one scenario leaves behind.
 type archiveTestOutput struct {
-	Passes          []archiveTestPass `json:"passes"`
-	StoredKeys      []string          `json:"storedKeys"`
-	StoreCreates    int               `json:"storeCreates"`
-	Events          []string          `json:"events"`
-	FinalizerKept   *bool             `json:"finalizerKept,omitempty"`
-	WorkflowsLeft   []string          `json:"workflowsLeft,omitempty"`
-	RecordVerdict   string            `json:"recordVerdict,omitempty"`
-	RecordClusterID string            `json:"recordClusterId,omitempty"`
+	Passes          []archiveTestPass
+	StoredKeys      []string
+	StoreCreates    int
+	Events          []string
+	FinalizerKept   *bool
+	WorkflowsLeft   []string
+	RecordVerdict   string
+	RecordClusterID string
 }
 
 type archiveTestPass struct {
-	Requeue     string            `json:"requeue"`
-	Annotations map[string]string `json:"annotations"`
+	Requeue     string
+	Annotations map[string]string
 }
 
+// archiveWant is the expectation for one scenario: the state and requeue
+// after each pass, plus what reached the store and the event stream.
+type archiveWant struct {
+	states   []string // archive-state after each pass ("" = no annotation)
+	requeues []string
+	stored   int
+	creates  int
+	events   []string
+	// uri, when set, must equal the archive-uri annotation after the last pass.
+	uri string
+	// errorContains, when set, must appear in archive-error after the last pass.
+	errorContains string
+	finalizerKept *bool
+}
+
+const (
+	backoffCapString     = "15m0s"
+	preexistingDifferent = "different"
+)
+
+const testURI = "gs://nvcre-results/runs/v=1/cluster=voyager-7/date=2026-09-16/run=" + archiveTestCertUID + "/record.json"
+
+func prodConfig() archiveTestInput {
+	var in archiveTestInput
+	in.Config.Default = "prod"
+	in.Config.ClusterID = "voyager-7"
+	in.Config.Destinations = map[string]string{"prod": "gs://nvcre-results/runs", "dev": "gs://nvcre-results-dev"}
+	in.Terminal = nvcrev1alpha1.CertificationSucceeded
+	in.TerminalAt = "2026-09-16T23:30:00Z"
+	in.Workflows = append(in.Workflows, archiveWorkflow("wf", "Succeeded", nil))
+	in.Passes = 1
+	return in
+}
+
+func archiveWorkflow(name, phase string, controlled *bool) struct {
+	Name       string `yaml:"name"`
+	Phase      string `yaml:"phase"`
+	Controlled *bool  `yaml:"controlled"`
+} {
+	return struct {
+		Name       string `yaml:"name"`
+		Phase      string `yaml:"phase"`
+		Controlled *bool  `yaml:"controlled"`
+	}{Name: name, Phase: phase, Controlled: controlled}
+}
+
+func failures(kind string, n int) []struct {
+	Kind  string `yaml:"kind"`
+	Count int    `yaml:"count"`
+} {
+	return []struct {
+		Kind  string `yaml:"kind"`
+		Count int    `yaml:"count"`
+	}{{Kind: kind, Count: n}}
+}
+
+func no() *bool { return new(false) }
+
 // TestCertificationArchive pins the emit state machine: destination selection,
-// the stability sweep, the terminal-condition date in the key, write-once handling, the backoff ladder per failure kind,
-// and the one bounded attempt on deletion.
+// the stability sweep, the terminal-condition date in the key, write-once
+// handling, the backoff ladder per failure kind, and the one bounded attempt
+// on deletion.
 func TestCertificationArchive(t *testing.T) {
-	p := testutil.TestCaseParser{Subdir: "certification-archive"}
-	p.TestDir(t, func(tc *testutil.TestCase) error {
-		var in archiveTestInput
-		if err := yaml.Unmarshal([]byte(tc.Inputs["input.yaml"]), &in); err != nil {
-			return err
-		}
-		if in.Passes == 0 {
-			in.Passes = 1
-		}
+	cases := []struct {
+		name string
+		in   func() archiveTestInput
+		want archiveWant
+	}{
+		{
+			// The plain path: one pass writes the object; a second pass is a no-op.
+			name: "succeeds first try",
+			in:   func() archiveTestInput { in := prodConfig(); in.Passes = 2; return in },
+			want: archiveWant{states: []string{ArchiveStateSucceeded, ArchiveStateSucceeded}, requeues: []string{"0s", "0s"},
+				stored: 1, creates: 1, events: []string{"Normal/" + ReasonArchived}, uri: testURI},
+		},
+		{
+			// The key's date is the UTC date of the terminal condition: 23:30 in
+			// UTC-8 is the 17th in UTC.
+			name: "date from terminal condition in UTC",
+			in:   func() archiveTestInput { in := prodConfig(); in.TerminalAt = "2026-09-16T23:30:00-08:00"; return in },
+			want: archiveWant{states: []string{ArchiveStateSucceeded}, requeues: []string{"0s"}, stored: 1, creates: 1,
+				events: []string{"Normal/" + ReasonArchived},
+				uri:    "gs://nvcre-results/runs/v=1/cluster=voyager-7/date=2026-09-17/run=" + archiveTestCertUID + "/record.json"},
+		},
+		{
+			// archive: "false" writes nothing and records Skipped.
+			name: "opt-out",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.Annotations = map[string]string{AnnotationArchive: "false"}
+				return in
+			},
+			want: archiveWant{states: []string{ArchiveStateSkipped}, requeues: []string{"0s"}, events: []string{}},
+		},
+		{
+			// No default and no annotation: nothing at all is written.
+			name: "no default is silent",
+			in:   func() archiveTestInput { in := prodConfig(); in.Config.Default = ""; return in },
+			want: archiveWant{states: []string{""}, requeues: []string{"0s"}, events: []string{}},
+		},
+		{
+			// An unknown destination is Misconfigured, terminal, with one Warning
+			// naming the valid names; a second pass does nothing more.
+			name: "unknown destination",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.Annotations = map[string]string{AnnotationArchiveDestination: "staging"}
+				in.Passes = 2
+				return in
+			},
+			want: archiveWant{states: []string{ArchiveStateMisconfigured, ArchiveStateMisconfigured}, requeues: []string{"0s", "0s"},
+				events: []string{"Warning/" + ReasonArchiveMisconfigured}, errorContains: "valid destinations: dev, prod"},
+		},
+		{
+			// A still-running owned Workflow can revert the terminal state:
+			// defer at the requeue interval, write nothing.
+			name: "workflow still running",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.Terminal = nvcrev1alpha1.CertificationFailed
+				in.Workflows = append(in.Workflows, archiveWorkflow("wf-b", "InProgress", nil))
+				return in
+			},
+			want: archiveWant{states: []string{""}, requeues: []string{"1s"}, events: []string{}},
+		},
+		{
+			// A foreign same-named Workflow is not ours and cannot revert us.
+			name: "foreign workflow ignored",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.Workflows = append(in.Workflows, archiveWorkflow("wf-foreign", "InProgress", no()))
+				return in
+			},
+			want: archiveWant{states: []string{ArchiveStateSucceeded}, requeues: []string{"0s"}, stored: 1, creates: 1,
+				events: []string{"Normal/" + ReasonArchived}},
+		},
+		{
+			// Not terminal: nothing to archive yet.
+			name: "not terminal",
+			in:   func() archiveTestInput { in := prodConfig(); in.Terminal = ""; return in },
+			want: archiveWant{states: []string{""}, requeues: []string{"0s"}, events: []string{}},
+		},
+		{
+			// Two 503s then success: URI recorded before the first write, backoff
+			// doubles, one Warning covers both failures, the third pass reuses
+			// the key, the fourth is a no-op.
+			name: "transient then success",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.StoreFailures = failures("transient", 2)
+				in.Passes = 4
+				return in
+			},
+			want: archiveWant{
+				states:   []string{ArchiveStateRetrying, ArchiveStateRetrying, ArchiveStateSucceeded, ArchiveStateSucceeded},
+				requeues: []string{"10s", "20s", "0s", "0s"},
+				stored:   1, creates: 3, uri: testURI,
+				events: []string{"Warning/" + ReasonArchiveFailed, "Normal/" + ReasonArchived},
+			},
+		},
+		{
+			// 403 is fixed by a person: wait at the cap, warn once, keep trying.
+			name: "forbidden waits at cap",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.StoreFailures = failures("forbidden", 3)
+				in.Passes = 3
+				return in
+			},
+			want: archiveWant{
+				states:   []string{ArchiveStateRetrying, ArchiveStateRetrying, ArchiveStateRetrying},
+				requeues: []string{backoffCapString, backoffCapString, backoffCapString},
+				creates:  3, events: []string{"Warning/" + ReasonArchiveFailed}, errorContains: "Forbidden",
+			},
+		},
+		{
+			// A 400 cannot be fixed by retrying: Misconfigured and terminal.
+			name: "invalid is terminal",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.StoreFailures = failures("invalid", 1)
+				in.Passes = 2
+				return in
+			},
+			want: archiveWant{states: []string{ArchiveStateMisconfigured, ArchiveStateMisconfigured}, requeues: []string{"0s", "0s"},
+				creates: 1, events: []string{"Warning/" + ReasonArchiveMisconfigured}},
+		},
+		{
+			// The object exists with our exact bytes: an earlier attempt landed.
+			name: "duplicate same checksum",
+			in:   func() archiveTestInput { in := prodConfig(); in.Preexisting = "same"; return in },
+			want: archiveWant{states: []string{ArchiveStateSucceeded}, requeues: []string{"0s"}, stored: 1, creates: 1,
+				events: []string{"Normal/" + ReasonArchived}},
+		},
+		{
+			// The object exists with different bytes: Conflict, never overwritten.
+			name: "duplicate different checksum",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.Preexisting = preexistingDifferent
+				in.Passes = 2
+				return in
+			},
+			want: archiveWant{states: []string{ArchiveStateConflict, ArchiveStateConflict}, requeues: []string{"0s", "0s"},
+				stored: 1, creates: 1, events: []string{"Warning/" + ReasonArchiveConflict}, errorContains: "different checksum"},
+		},
+		{
+			// run --cleanup: handleDeletion archives once, then deletes the
+			// Workflows and removes the finalizer.
+			name: "deletion archives",
+			in:   func() archiveTestInput { in := prodConfig(); in.Deletion = true; return in },
+			want: archiveWant{states: []string{""}, requeues: []string{"0s"}, stored: 1, creates: 1,
+				events: []string{"Normal/" + ReasonArchived}, finalizerKept: no()},
+		},
+		{
+			// The bucket is down during deletion: the attempt fails and the
+			// finalizer is removed anyway.
+			name: "deletion with store down",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.Terminal = nvcrev1alpha1.CertificationFailed
+				in.StoreFailures = failures("transient", 5)
+				in.Deletion = true
+				return in
+			},
+			want: archiveWant{states: []string{""}, requeues: []string{"0s"}, creates: 1,
+				events: []string{"Warning/" + ReasonArchiveFailed}, finalizerKept: no()},
+		},
+	}
 
-		scheme := runtime.NewScheme()
-		if err := clientgoscheme.AddToScheme(scheme); err != nil {
-			return err
-		}
-		if err := nvcrev1alpha1.AddToScheme(scheme); err != nil {
-			return err
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := tc.in()
+			out, stores := runArchiveScenario(t, in)
 
-		cert := archiveTestCertification(in)
-		objs := []client.Object{cert}
-		for _, w := range in.Workflows {
-			wf := &nvcrev1alpha1.Workflow{}
-			wf.Name, wf.Namespace = w.Name, cert.Namespace
-			wf.Labels = map[string]string{labelCertification: cert.Name}
-			if w.Controlled == nil || *w.Controlled {
-				if err := controllerutil.SetControllerReference(cert, wf, scheme); err != nil {
-					return err
-				}
+			require.Len(t, out.Passes, len(tc.want.states))
+			for i, p := range out.Passes {
+				require.Equal(t, tc.want.states[i], p.Annotations[AnnotationArchiveState], "state after pass %d", i)
+				require.Equal(t, tc.want.requeues[i], p.Requeue, "requeue after pass %d", i)
 			}
-			if w.Phase != "" && w.Phase != "InProgress" {
-				wf.Status.Conditions = []metav1.Condition{{
-					Type: w.Phase, Status: metav1.ConditionTrue, Reason: archiveTestReason,
-					LastTransitionTime: metav1.Now(),
-				}}
+			require.Len(t, out.StoredKeys, tc.want.stored)
+			require.Equal(t, tc.want.creates, out.StoreCreates)
+			require.Equal(t, tc.want.events, out.Events)
+			last := out.Passes[len(out.Passes)-1].Annotations
+			if tc.want.uri != "" {
+				require.Equal(t, tc.want.uri, last[AnnotationArchiveURI])
+				require.Equal(t, []string{"prod:" + strings.TrimPrefix(tc.want.uri, "gs://nvcre-results/")}, out.StoredKeys)
 			}
-			objs = append(objs, wf)
-		}
-		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+			if tc.want.errorContains != "" {
+				require.Contains(t, last[AnnotationArchiveError], tc.want.errorContains)
+			}
+			if tc.want.finalizerKept != nil {
+				require.NotNil(t, out.FinalizerKept)
+				require.Equal(t, *tc.want.finalizerKept, *out.FinalizerKept)
+				require.Empty(t, out.WorkflowsLeft, "owned Workflows are deleted")
+			}
+			if tc.want.stored > 0 && in.Preexisting != preexistingDifferent {
+				require.Equal(t, record.VerdictPassed, out.RecordVerdict)
+				require.Equal(t, "voyager-7", out.RecordClusterID)
+			}
+			_ = stores
+		})
+	}
+}
 
-		recorder := &recordingEventRecorder{}
-		r := &CertificationReconciler{Client: c, Scheme: scheme, Recorder: recorder, WorkflowRequeueInterval: time.Second}
-		stores := map[string]*archive.MemoryStore{}
-		if !in.Disabled {
-			cfg := &ArchiveConfig{
-				Destinations: map[string]ArchiveDestination{},
-				Default:      in.Config.Default,
-				ClusterID:    in.Config.ClusterID,
-				Provenance: record.Provenance{
-					Controller: record.ControllerProvenance{Version: "v-test"},
-					Catalog:    record.CatalogProvenance{Revision: "rev-test"},
-				},
-			}
-			for name, raw := range in.Config.Destinations {
-				d, err := archive.ParseDestination(raw)
-				if err != nil {
-					return err
-				}
-				store := archive.NewMemoryStore()
-				stores[name] = store
-				cfg.Destinations[name] = ArchiveDestination{Name: name, Destination: d, Store: store}
-			}
-			r.Archive = cfg
-		}
+// runArchiveScenario builds the fake cluster, the reconciler and the stores
+// for one scenario and drives the configured passes.
+func runArchiveScenario(t *testing.T, in archiveTestInput) (*archiveTestOutput, map[string]*archive.MemoryStore) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, nvcrev1alpha1.AddToScheme(scheme))
 
-		// Stage failures and a pre-existing object on the selected store.
-		sel := archiveSelection{}
-		if r.Archive != nil {
-			sel = r.selectArchiveDestination(cert)
+	cert := archiveTestCertification(in)
+	objs := make([]client.Object, 0, 1+len(in.Workflows))
+	objs = append(objs, cert)
+	for _, w := range in.Workflows {
+		wf := &nvcrev1alpha1.Workflow{}
+		wf.Name, wf.Namespace = w.Name, cert.Namespace
+		wf.Labels = map[string]string{labelCertification: cert.Name}
+		if w.Controlled == nil || *w.Controlled {
+			require.NoError(t, controllerutil.SetControllerReference(cert, wf, scheme))
 		}
-		if sel.dest != nil {
-			store := stores[sel.dest.Name]
-			for _, f := range in.StoreFailures {
-				store.FailNext(f.Count, archiveFailure(f.Kind))
-			}
-			if in.Preexisting != "" {
-				key, body, err := archiveExpectedObject(context.Background(), r, cert, sel.dest)
-				if err != nil {
-					return err
-				}
-				if in.Preexisting == "different" {
-					body = []byte(`{"kind":"SomethingElse"}`)
-				}
-				store.Put(key, body, record.ContentType)
-			}
+		if w.Phase != "" && w.Phase != "InProgress" {
+			wf.Status.Conditions = []metav1.Condition{{
+				Type: w.Phase, Status: metav1.ConditionTrue, Reason: archiveTestReason, LastTransitionTime: metav1.Now(),
+			}}
 		}
+		objs = append(objs, wf)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 
-		out, err := runArchivePasses(context.Background(), c, r, cert, in)
-		if err != nil {
-			return err
+	recorder := &recordingEventRecorder{}
+	r := &CertificationReconciler{Client: c, Scheme: scheme, Recorder: recorder, WorkflowRequeueInterval: time.Second}
+	stores := map[string]*archive.MemoryStore{}
+	if !in.Disabled {
+		cfg := &ArchiveConfig{
+			Destinations: map[string]ArchiveDestination{},
+			Default:      in.Config.Default,
+			ClusterID:    in.Config.ClusterID,
+			Provenance: record.Provenance{
+				Controller: record.ControllerProvenance{Version: "v-test"},
+				Catalog:    record.CatalogProvenance{Revision: "rev-test"},
+			},
 		}
-		collectArchiveTestOutput(context.Background(), c, cert, in, stores, recorder, out)
+		for name, raw := range in.Config.Destinations {
+			d, err := archive.ParseDestination(raw)
+			require.NoError(t, err)
+			store := archive.NewMemoryStore()
+			stores[name] = store
+			cfg.Destinations[name] = ArchiveDestination{Name: name, Destination: d, Store: store}
+		}
+		r.Archive = cfg
+	}
 
-		b, err := json.MarshalIndent(out, "", "  ")
-		if err != nil {
-			return err
+	// Stage failures and a pre-existing object on the selected store.
+	sel := archiveSelection{}
+	if r.Archive != nil {
+		sel = r.selectArchiveDestination(cert)
+	}
+	if sel.dest != nil {
+		store := stores[sel.dest.Name]
+		for _, f := range in.StoreFailures {
+			store.FailNext(f.Count, archiveFailure(f.Kind))
 		}
-		tc.Actual = string(b) + "\n"
-		return nil
-	})
+		if in.Preexisting != "" {
+			key, body, err := archiveExpectedObject(context.Background(), r, cert, sel.dest)
+			require.NoError(t, err)
+			if in.Preexisting == preexistingDifferent {
+				body = []byte(`{"kind":"SomethingElse"}`)
+			}
+			store.Put(key, body, record.ContentType)
+		}
+	}
+
+	out, err := runArchivePasses(context.Background(), c, r, cert, in)
+	require.NoError(t, err)
+	collectArchiveTestOutput(context.Background(), c, cert, in, stores, recorder, out)
+	return out, stores
 }
 
 // runArchivePasses drives maybeArchive (or handleDeletion) the configured

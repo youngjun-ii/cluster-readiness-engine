@@ -1,7 +1,0 @@
-# nvcre.nvidia.com/archive: "false" opts the run out. Nothing is written and
-# the state records Skipped so an operator can see the archive was consulted.
-config: {default: prod, destinations: {prod: gs://nvcre-results/runs}, clusterId: voyager-7}
-annotations: {nvcre.nvidia.com/archive: "false"}
-terminal: Succeeded
-workflows:
-  - {name: wf, phase: Succeeded}

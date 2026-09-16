@@ -1,9 +1,0 @@
-# The plain path: a Succeeded Certification with terminal Workflows and a
-# default destination. One pass writes the object and lands on Succeeded; the
-# key carries the schema major, cluster id, the terminal date and the full UID.
-config: {default: prod, destinations: {prod: gs://nvcre-results/runs, dev: gs://nvcre-results-dev}, clusterId: voyager-7}
-terminal: Succeeded
-terminalAt: "2026-09-16T23:30:00Z"
-workflows:
-  - {name: cert-archive-communication-nccl-all-reduce, phase: Succeeded}
-passes: 2

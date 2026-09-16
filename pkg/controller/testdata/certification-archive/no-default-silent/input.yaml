@@ -1,6 +1,0 @@
-# No default and no annotation: the run is not archived and nothing at all is
-# written to it. Opt-in only is a valid configuration, not an error.
-config: {destinations: {prod: gs://nvcre-results/runs}, clusterId: voyager-7}
-terminal: Succeeded
-workflows:
-  - {name: wf, phase: Succeeded}

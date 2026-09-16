@@ -1,6 +1,0 @@
-# A run that Succeeded while excluding nodes is INCOMPLETE, and the coverage
-# denominator keeps the excluded nodes: targeted counts them, eligible does
-# not, and each exclusion carries a reason code classified from the merged
-# message the Workflow wrote (one cordoned node and one under capacity).
-clusterId: voyager-7
-captureIdentity: true

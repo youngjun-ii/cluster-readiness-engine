@@ -1,9 +1,0 @@
-# run --cleanup deletes the Certification as soon as the CLI sees terminal,
-# possibly before the terminal-branch emit ran. handleDeletion makes one
-# attempt, the object lands, then the Workflows are deleted and the finalizer
-# is removed.
-config: {default: prod, destinations: {prod: gs://nvcre-results/runs}, clusterId: voyager-7}
-terminal: Succeeded
-workflows:
-  - {name: wf, phase: Succeeded}
-deletion: true

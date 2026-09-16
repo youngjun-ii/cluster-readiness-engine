@@ -1,8 +1,0 @@
-# A same-named Workflow that this Certification does not control is still
-# InProgress. It is not ours, so it cannot revert our terminal state and must
-# not hold up the archive.
-config: {default: prod, destinations: {prod: gs://nvcre-results/runs}, clusterId: voyager-7}
-terminal: Succeeded
-workflows:
-  - {name: wf-ours, phase: Succeeded}
-  - {name: wf-foreign, phase: InProgress, controlled: false}

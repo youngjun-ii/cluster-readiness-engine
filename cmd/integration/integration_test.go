@@ -1447,16 +1447,46 @@ func waitForArchive(t *testing.T, c client.Client, cfg waitConfig, stores map[st
 	}
 }
 
-// archivedObject is one stored record as it appears in the golden.
+// archivedObject is one stored record as it appears in the golden: a compact
+// summary of the outcome-bearing fields rather than the full document, which
+// the builder's own tests cover.
 type archivedObject struct {
-	URI         string         `json:"uri"`
-	ContentType string         `json:"contentType"`
-	Record      *record.Record `json:"record"`
+	URI          string             `json:"uri"`
+	ContentType  string             `json:"contentType"`
+	Verdict      string             `json:"verdict"`
+	Coverage     record.Coverage    `json:"coverage"`
+	Completeness string             `json:"completeness"`
+	Gaps         []string           `json:"gaps"`
+	Provenance   record.Provenance  `json:"provenance"`
+	Nodes        []archivedNode     `json:"nodes"`
+	Categories   []archivedCategory `json:"categories"`
 }
 
-// collectArchive serialises every stored object, with the volatile parts of
-// the record (UIDs, timestamps, the date segment of the key) normalised the
-// same way the collected Kubernetes objects are.
+type archivedNode struct {
+	Name     string `json:"name"`
+	Identity string `json:"identity"`
+	Outcome  string `json:"outcome"`
+}
+
+type archivedCategory struct {
+	Domain  string          `json:"domain"`
+	Variant string          `json:"variant"`
+	Status  string          `json:"status"`
+	Groups  []archivedGroup `json:"groups"`
+}
+
+type archivedGroup struct {
+	Name         string   `json:"name"`
+	Phase        string   `json:"phase"`
+	JobOutcome   string   `json:"jobOutcome"`
+	GroupOutcome string   `json:"groupOutcome"`
+	Measurements []string `json:"measurements"` // kind:frozen
+	Thresholds   []string `json:"thresholds"`   // metric=value:passed
+	Verdicts     []string `json:"verdicts"`     // node=Verdict/Reason
+}
+
+// collectArchive serialises every stored object as a summary, with the
+// volatile date and UID segments of the key normalised.
 func collectArchive(
 	t *testing.T, stores map[string]*archive.MemoryStore, cfg *archiveSpec,
 ) map[string][]archivedObject {
@@ -1475,20 +1505,62 @@ func collectArchive(
 			body, ct, _ := stores[name].Get(key)
 			rec := &record.Record{}
 			require.NoError(t, json.Unmarshal(body, rec), "archived object %s is not a record", key)
-			sanitizeArchiveRecord(rec)
-			objs = append(objs, archivedObject{
-				URI:         sanitizeArchiveURI("gs://" + dest.Bucket + "/" + key),
-				ContentType: ct,
-				Record:      rec,
-			})
+			objs = append(objs, summarizeRecord(sanitizeArchiveURI("gs://"+dest.Bucket+"/"+key), ct, rec))
 		}
 		out[name] = objs
 	}
 	return out
 }
 
-// sanitizedNodeUID stands in for API-server-assigned Node UIDs in goldens.
-const sanitizedNodeUID = "node-uid"
+func summarizeRecord(uri, contentType string, rec *record.Record) archivedObject {
+	o := archivedObject{
+		URI: uri, ContentType: contentType,
+		Verdict: rec.Verdict.Status, Coverage: rec.Verdict.Coverage,
+		Completeness: rec.Completeness.State, Gaps: []string{},
+		Provenance: rec.Provenance, Nodes: []archivedNode{}, Categories: []archivedCategory{},
+	}
+	for _, g := range rec.Completeness.Gaps {
+		o.Gaps = append(o.Gaps, g.Code)
+	}
+	for _, n := range rec.Nodes {
+		o.Nodes = append(o.Nodes, archivedNode{Name: n.HostnameAlias, Identity: n.IdentityCompleteness, Outcome: n.Outcome})
+	}
+	for _, c := range rec.Categories {
+		ac := archivedCategory{Domain: c.Domain, Variant: c.Variant, Status: c.Status, Groups: []archivedGroup{}}
+		for _, it := range c.Iterations {
+			if !it.Final {
+				continue
+			}
+			for _, g := range it.Groups {
+				ag := archivedGroup{
+					Name: g.Name, Phase: g.Phase, Measurements: []string{}, Thresholds: []string{}, Verdicts: []string{},
+				}
+				for _, a := range g.Attempts {
+					ag.JobOutcome, ag.GroupOutcome = a.JobOutcome, a.GroupOutcome
+					for _, m := range a.Measurements {
+						ag.Measurements = append(ag.Measurements, fmt.Sprintf("%s:%t", m.Kind, m.Frozen))
+					}
+					for _, te := range a.ThresholdEvaluations {
+						v, p := "none", "null"
+						if te.MeasuredValue != nil {
+							v = fmt.Sprintf("%g", *te.MeasuredValue)
+						}
+						if te.Passed != nil {
+							p = fmt.Sprintf("%t", *te.Passed)
+						}
+						ag.Thresholds = append(ag.Thresholds, te.Metric+"="+v+":"+p)
+					}
+					for _, nv := range a.NodeVerdicts {
+						ag.Verdicts = append(ag.Verdicts, nv.HostnameAlias+"="+nv.Verdict+"/"+nv.Reason)
+					}
+				}
+				ac.Groups = append(ac.Groups, ag)
+			}
+		}
+		o.Categories = append(o.Categories, ac)
+	}
+	return o
+}
 
 var (
 	archiveDateSegment = regexp.MustCompile(`date=\d{4}-\d{2}-\d{2}`)
@@ -1496,53 +1568,12 @@ var (
 	uuidPattern        = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
 
+// sanitizedNodeUID stands in for API-server-assigned Node UIDs in goldens.
+const sanitizedNodeUID = "node-uid"
+
 func sanitizeArchiveURI(uri string) string {
 	uri = archiveDateSegment.ReplaceAllString(uri, "date=DATE")
 	return archiveRunSegment.ReplaceAllString(uri, "run=UID")
-}
-
-// sanitizeArchiveRecord clears wall-clock and API-server-assigned values. A
-// placeholder rather than nil keeps "was it set" visible in the golden.
-func sanitizeArchiveRecord(rec *record.Record) {
-	epoch := metav1.NewTime(time.Unix(0, 0).UTC())
-	fix := func(t **metav1.Time) {
-		if *t != nil {
-			e := epoch
-			*t = &e
-		}
-	}
-	rec.Run.ID = "certification-uid"
-	rec.Run.CreatedAt = epoch
-	fix(&rec.Run.TerminalAt)
-	for i := range rec.Nodes {
-		n := &rec.Nodes[i]
-		if uuidPattern.MatchString(n.KubernetesUID) {
-			if n.ID == n.KubernetesUID {
-				n.ID = sanitizedNodeUID
-			}
-			n.KubernetesUID = sanitizedNodeUID
-		}
-	}
-	for ci := range rec.Categories {
-		for ii := range rec.Categories[ci].Iterations {
-			for gi := range rec.Categories[ci].Iterations[ii].Groups {
-				for ai := range rec.Categories[ci].Iterations[ii].Groups[gi].Attempts {
-					a := &rec.Categories[ci].Iterations[ii].Groups[gi].Attempts[ai]
-					fix(&a.StartTime)
-					fix(&a.CompletionTime)
-					fix(&a.WorkloadStartTime)
-					for mi := range a.Measurements {
-						m := &a.Measurements[mi]
-						fix(&m.StartTime)
-						fix(&m.CompletionTime)
-						if m.FreezeCondition != nil {
-							fix(&m.FreezeCondition.LastTransitionTime)
-						}
-					}
-				}
-			}
-		}
-	}
 }
 
 // sanitizeNodeIdentityConfigMap replaces the gzip payload of a node-identity

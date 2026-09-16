@@ -1,5 +1,0 @@
-# A Certification with no terminal condition has no terminal time and nothing
-# to archive yet. The Workflows happen to be terminal; that is not enough.
-config: {default: prod, destinations: {prod: gs://nvcre-results/runs}, clusterId: voyager-7}
-workflows:
-  - {name: wf, phase: Succeeded}

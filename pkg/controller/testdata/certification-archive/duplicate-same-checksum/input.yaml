@@ -1,8 +1,0 @@
-# The object already exists with exactly the bytes the controller would
-# write: an earlier attempt landed but its annotation did not. That is a
-# success, verified by checksum, and nothing is overwritten.
-config: {default: prod, destinations: {prod: gs://nvcre-results/runs}, clusterId: voyager-7}
-terminal: Succeeded
-workflows:
-  - {name: wf, phase: Succeeded}
-preexisting: same
