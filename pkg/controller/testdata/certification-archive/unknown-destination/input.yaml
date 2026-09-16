@@ -1,0 +1,9 @@
+# A run names a destination the controller does not have. Misconfigured is
+# terminal, one Warning names the valid destinations, and the run itself is
+# untouched.
+config: {default: prod, destinations: {prod: gs://nvcre-results/runs, dev: gs://nvcre-results-dev}, clusterId: voyager-7}
+annotations: {nvcre.nvidia.com/archive-destination: staging}
+terminal: Succeeded
+workflows:
+  - {name: wf, phase: Succeeded}
+passes: 2

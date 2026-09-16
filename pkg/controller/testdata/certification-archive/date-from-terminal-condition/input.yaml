@@ -1,0 +1,8 @@
+# The terminal condition's transition time is 23:30 on the 16th in UTC-8
+# (07:30 on the 17th UTC). The key's date must be the UTC date of that
+# transition, and must not move if the write is retried on another day.
+config: {default: prod, destinations: {prod: gs://nvcre-results/runs}, clusterId: voyager-7}
+terminal: Succeeded
+terminalAt: "2026-09-16T23:30:00-08:00"
+workflows:
+  - {name: wf, phase: Succeeded}

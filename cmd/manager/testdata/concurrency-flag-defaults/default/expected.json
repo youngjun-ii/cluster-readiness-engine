@@ -44,6 +44,22 @@
     "default": "true"
   },
   {
+    "name": "results-archive-cluster-id",
+    "default": ""
+  },
+  {
+    "name": "results-archive-default",
+    "default": ""
+  },
+  {
+    "name": "results-archive-destination",
+    "default": "[]"
+  },
+  {
+    "name": "results-archive-include-failure-log",
+    "default": "false"
+  },
+  {
     "name": "webhook-cert-key",
     "default": "tls.key"
   },

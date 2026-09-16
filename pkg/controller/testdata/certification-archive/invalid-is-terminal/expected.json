@@ -1,0 +1,27 @@
+{
+  "passes": [
+    {
+      "requeue": "0s",
+      "annotations": {
+        "nvcre.nvidia.com/archive-attempts": "1",
+        "nvcre.nvidia.com/archive-error": "Invalid: POST https://storage.googleapis.com/upload: HTTP 400: bad request",
+        "nvcre.nvidia.com/archive-state": "Misconfigured",
+        "nvcre.nvidia.com/archive-uri": "gs://nvcre-results/runs/v=1/cluster=voyager-7/date=2026-09-16/run=0f1e2d3c-0000-4000-8000-0000000000aa/record.json"
+      }
+    },
+    {
+      "requeue": "0s",
+      "annotations": {
+        "nvcre.nvidia.com/archive-attempts": "1",
+        "nvcre.nvidia.com/archive-error": "Invalid: POST https://storage.googleapis.com/upload: HTTP 400: bad request",
+        "nvcre.nvidia.com/archive-state": "Misconfigured",
+        "nvcre.nvidia.com/archive-uri": "gs://nvcre-results/runs/v=1/cluster=voyager-7/date=2026-09-16/run=0f1e2d3c-0000-4000-8000-0000000000aa/record.json"
+      }
+    }
+  ],
+  "storedKeys": null,
+  "storeCreates": 1,
+  "events": [
+    "Warning/ArchiveMisconfigured"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "passes": [
+    {
+      "requeue": "0s",
+      "annotations": {
+        "(object)": "deleted"
+      }
+    }
+  ],
+  "storedKeys": null,
+  "storeCreates": 1,
+  "events": [
+    "Warning/ArchiveFailed"
+  ],
+  "finalizerKept": false
+}

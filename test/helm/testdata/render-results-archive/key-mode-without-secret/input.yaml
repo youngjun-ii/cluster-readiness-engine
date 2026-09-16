@@ -1,0 +1,6 @@
+# serviceAccountKey mode without a Secret name has nothing to mount.
+set:
+  - resultsArchive.enabled=true
+  - resultsArchive.clusterId=voyager-7
+  - resultsArchive.destinations.prod=gs://nvcre-results-prod/runs
+  - resultsArchive.auth.mode=serviceAccountKey

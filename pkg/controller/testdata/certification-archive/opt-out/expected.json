@@ -1,0 +1,13 @@
+{
+  "passes": [
+    {
+      "requeue": "0s",
+      "annotations": {
+        "nvcre.nvidia.com/archive-state": "Skipped"
+      }
+    }
+  ],
+  "storedKeys": null,
+  "storeCreates": 0,
+  "events": []
+}

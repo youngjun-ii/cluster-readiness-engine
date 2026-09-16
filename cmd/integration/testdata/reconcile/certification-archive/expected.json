@@ -1,0 +1,329 @@
+{
+  "Certification/test-cert-archive": {
+    "kind": "Certification",
+    "apiVersion": "nvcre.nvidia.com/v1alpha1",
+    "metadata": {
+      "name": "test-cert-archive",
+      "namespace": "default",
+      "annotations": {
+        "nvcre.nvidia.com/archive-attempts": "1",
+        "nvcre.nvidia.com/archive-state": "Succeeded",
+        "nvcre.nvidia.com/archive-uri": "gs://nvcre-results/runs/v=1/cluster=envtest/date=DATE/run=UID/record.json",
+        "nvcre.nvidia.com/node-identity-ref": "node-identity-test-cert-archive"
+      },
+      "finalizers": [
+        "nvcre.nvidia.com/certification-finalizer"
+      ]
+    },
+    "spec": {
+      "target": {
+        "nodeSelector": {
+          "nvidia.com/gpu.present": "true",
+          "nvidia.com/gpu.product": "NVIDIA-GB200-NVL72"
+        }
+      },
+      "categories": [
+        {
+          "domain": "communication",
+          "variant": "nccl-all-reduce",
+          "options": {
+            "thresholds": {
+              "busBandwidthGBps": "value \u003e= 100"
+            }
+          }
+        }
+      ],
+      "nodesPerJob": 2
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "InProgress",
+          "status": "False",
+          "observedGeneration": 1,
+          "lastTransitionTime": null,
+          "reason": "NotApplicable",
+          "message": ""
+        },
+        {
+          "type": "Succeeded",
+          "status": "True",
+          "observedGeneration": 1,
+          "lastTransitionTime": null,
+          "reason": "AllWorkflowsSucceeded",
+          "message": "All certification categories completed successfully"
+        },
+        {
+          "type": "Failed",
+          "status": "False",
+          "observedGeneration": 1,
+          "lastTransitionTime": null,
+          "reason": "NotApplicable",
+          "message": ""
+        }
+      ],
+      "categoryStatuses": [
+        {
+          "domain": "communication",
+          "variant": "nccl-all-reduce",
+          "workflowRef": {
+            "name": "test-cert-archive-communication-nccl-all-reduce",
+            "namespace": "default"
+          },
+          "status": "Succeeded"
+        }
+      ]
+    }
+  },
+  "archive": {
+    "dev": [],
+    "prod": [
+      {
+        "uri": "gs://nvcre-results/runs/v=1/cluster=envtest/date=DATE/run=UID/record.json",
+        "contentType": "application/json",
+        "record": {
+          "schemaVersion": "1.0.0",
+          "kind": "CertificationResult",
+          "run": {
+            "id": "certification-uid",
+            "clusterId": "envtest",
+            "namespace": "default",
+            "name": "test-cert-archive",
+            "generation": 1,
+            "createdAt": "1970-01-01T00:00:00Z",
+            "terminalAt": "1970-01-01T00:00:00Z",
+            "certificationSpec": {
+              "target": {
+                "nodeSelector": {
+                  "nvidia.com/gpu.present": "true",
+                  "nvidia.com/gpu.product": "NVIDIA-GB200-NVL72"
+                }
+              },
+              "categories": [
+                {
+                  "domain": "communication",
+                  "variant": "nccl-all-reduce",
+                  "options": {
+                    "thresholds": {
+                      "busBandwidthGBps": "value \u003e= 100"
+                    }
+                  }
+                }
+              ],
+              "nodesPerJob": 2
+            },
+            "specSha256": "42b3d3d75d2a4d05675553127d95c37534630a4230f654554f88e0880e94b03e"
+          },
+          "verdict": {
+            "status": "PASSED",
+            "reason": "AllWorkflowsSucceeded",
+            "message": "All certification categories completed successfully",
+            "reductionPolicy": "final-iteration-any-failed",
+            "coverage": {
+              "targeted": 2,
+              "eligible": 2,
+              "tested": 2,
+              "outcomes": {
+                "passed": 2,
+                "failed": 0,
+                "inconclusive": 0,
+                "excluded": 0
+              }
+            }
+          },
+          "provenance": {
+            "controller": {
+              "version": "v0.0.0-envtest",
+              "imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000e57"
+            },
+            "catalog": {
+              "revision": "catalog-revision-envtest"
+            },
+            "kubernetesVersion": "v0.0.0-envtest",
+            "workloadImages": [
+              {
+                "category": "communication/nccl-all-reduce",
+                "requested": "nvcr.io/nvidia/pytorch:26.01-py3",
+                "resolvedDigest": null
+              }
+            ]
+          },
+          "nodes": [
+            {
+              "id": "SYS-0000-0001",
+              "hostnameAlias": "archive-node-01",
+              "kubernetesUid": "snapshot-uid-01",
+              "systemUuid": "SYS-0000-0001",
+              "gpuUuids": [],
+              "identityCompleteness": "system-only",
+              "providerId": "gce://envtest/us-central1-a/archive-node-01",
+              "gpu": {
+                "product": "NVIDIA-GB200-NVL72",
+                "allocatableCount": 4
+              },
+              "labels": {
+                "kubernetes.io/hostname": "archive-node-01",
+                "nvidia.com/gpu.clique": "clique-a",
+                "nvidia.com/gpu.product": "NVIDIA-GB200-NVL72"
+              },
+              "outcome": "Passed",
+              "reasons": [
+                {
+                  "category": "communication/nccl-all-reduce",
+                  "verdict": "Passed",
+                  "attribution": "group"
+                }
+              ]
+            },
+            {
+              "id": "SYS-0000-0002",
+              "hostnameAlias": "archive-node-02",
+              "kubernetesUid": "snapshot-uid-02",
+              "systemUuid": "SYS-0000-0002",
+              "gpuUuids": [],
+              "identityCompleteness": "system-only",
+              "providerId": "gce://envtest/us-central1-a/archive-node-02",
+              "gpu": {
+                "product": "NVIDIA-GB200-NVL72",
+                "allocatableCount": 4
+              },
+              "labels": {
+                "kubernetes.io/hostname": "archive-node-02",
+                "nvidia.com/gpu.clique": "clique-a",
+                "nvidia.com/gpu.product": "NVIDIA-GB200-NVL72"
+              },
+              "outcome": "Passed",
+              "reasons": [
+                {
+                  "category": "communication/nccl-all-reduce",
+                  "verdict": "Passed",
+                  "attribution": "group"
+                }
+              ]
+            }
+          ],
+          "exclusions": [],
+          "categories": [
+            {
+              "domain": "communication",
+              "variant": "nccl-all-reduce",
+              "workflow": "test-cert-archive-communication-nccl-all-reduce",
+              "status": "Succeeded",
+              "validationFailed": false,
+              "testScale": "full-scale",
+              "detectedPlatform": "gcp",
+              "detectedGPUArchitecture": "gb200",
+              "nodesPerJob": 2,
+              "totalNodes": 2,
+              "totalGroups": 1,
+              "thresholds": {
+                "busBandwidthGBps": "value \u003e= 100"
+              },
+              "appliedOverrides": [],
+              "diagnose": null,
+              "iterations": [
+                {
+                  "index": 1,
+                  "final": true,
+                  "groups": [
+                    {
+                      "name": "group-0",
+                      "nodes": [
+                        "archive-node-01",
+                        "archive-node-02"
+                      ],
+                      "domains": [
+                        "clique-a"
+                      ],
+                      "overflow": false,
+                      "phase": "Succeeded",
+                      "retries": 0,
+                      "attempts": [
+                        {
+                          "id": "communication/nccl-all-reduce/1/group-0/0",
+                          "index": 0,
+                          "jobName": "test-cert-archive-communication-nccl-all-reduce-group-0-iter-1",
+                          "jobFound": true,
+                          "startTime": "1970-01-01T00:00:00Z",
+                          "completionTime": "1970-01-01T00:00:00Z",
+                          "workloadStartTime": "1970-01-01T00:00:00Z",
+                          "restartCount": 0,
+                          "jobOutcome": "SUCCEEDED",
+                          "jobOutcomeReason": "WorkloadSucceeded",
+                          "jobOutcomeMessage": "Workload completed successfully",
+                          "validationFailed": false,
+                          "groupOutcome": "SUCCEEDED",
+                          "measurements": [
+                            {
+                              "kind": "bandwidth",
+                              "name": "test-cert-archive-communication-nccl-all-reduce-group-0-iter-1-bandwidth",
+                              "logProfile": "nccl-all-reduce",
+                              "frozen": true,
+                              "freezeCondition": {
+                                "type": "Complete",
+                                "status": "True",
+                                "reason": "JobSucceeded",
+                                "message": "Measurement complete",
+                                "lastTransitionTime": "1970-01-01T00:00:00Z"
+                              },
+                              "startTime": "1970-01-01T00:00:00Z",
+                              "completionTime": "1970-01-01T00:00:00Z",
+                              "bandwidth": {
+                                "testType": "all_reduce",
+                                "results": [
+                                  {
+                                    "sizeBytes": 1073741824,
+                                    "algBW": "245.10",
+                                    "busBW": "459.56",
+                                    "samples": 10
+                                  },
+                                  {
+                                    "sizeBytes": 8,
+                                    "algBW": "0.00",
+                                    "busBW": "0.00",
+                                    "samples": 10
+                                  }
+                                ]
+                              }
+                            }
+                          ],
+                          "thresholdEvaluations": [
+                            {
+                              "metric": "busBandwidthGBps",
+                              "expression": "value \u003e= 100",
+                              "measuredValue": 459.56,
+                              "passed": true
+                            }
+                          ],
+                          "nodeVerdicts": [
+                            {
+                              "nodeId": "SYS-0000-0001",
+                              "hostnameAlias": "archive-node-01",
+                              "verdict": "Passed",
+                              "attribution": "group"
+                            },
+                            {
+                              "nodeId": "SYS-0000-0002",
+                              "hostnameAlias": "archive-node-02",
+                              "verdict": "Passed",
+                              "attribution": "group"
+                            }
+                          ],
+                          "failureEvidence": null
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "completeness": {
+            "state": "complete",
+            "gaps": []
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,5 +1,9 @@
 [
   {
+    "name": "archive-to",
+    "default": ""
+  },
+  {
     "name": "category",
     "default": "[]"
   },

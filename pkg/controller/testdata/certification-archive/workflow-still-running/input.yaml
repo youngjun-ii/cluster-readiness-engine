@@ -1,0 +1,8 @@
+# The Certification is Failed but one owned Workflow is still InProgress (a
+# repeatCount restart). The terminal condition can revert, so nothing is
+# emitted and the emitter asks to look again at the requeue interval.
+config: {default: prod, destinations: {prod: gs://nvcre-results/runs}, clusterId: voyager-7}
+terminal: Failed
+workflows:
+  - {name: wf-a, phase: Succeeded}
+  - {name: wf-b, phase: InProgress}

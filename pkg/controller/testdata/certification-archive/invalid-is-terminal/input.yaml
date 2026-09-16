@@ -1,0 +1,9 @@
+# A 400 means the controller produced a request the API rejects. Retrying
+# cannot fix it; the state is Misconfigured and terminal.
+config: {default: prod, destinations: {prod: gs://nvcre-results/runs}, clusterId: voyager-7}
+terminal: Succeeded
+workflows:
+  - {name: wf, phase: Succeeded}
+storeFailures:
+  - {kind: invalid, count: 1}
+passes: 2

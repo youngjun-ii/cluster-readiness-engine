@@ -1,0 +1,97 @@
+{
+  "Certification/test-cert-archive-capture": {
+    "kind": "Certification",
+    "apiVersion": "nvcre.nvidia.com/v1alpha1",
+    "metadata": {
+      "name": "test-cert-archive-capture",
+      "namespace": "default",
+      "annotations": {
+        "nvcre.nvidia.com/node-identity-ref": "node-identity-test-cert-archive-capture"
+      },
+      "finalizers": [
+        "nvcre.nvidia.com/certification-finalizer"
+      ]
+    },
+    "spec": {
+      "target": {
+        "nodeSelector": {
+          "nvidia.com/gpu.product": "NVIDIA-GB200-NVL72"
+        }
+      },
+      "categories": [
+        {
+          "domain": "communication",
+          "variant": "nccl-all-reduce"
+        }
+      ],
+      "nodesPerJob": 2
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "InProgress",
+          "status": "True",
+          "observedGeneration": 1,
+          "lastTransitionTime": null,
+          "reason": "WorkflowRunning",
+          "message": "Certification in progress"
+        },
+        {
+          "type": "Succeeded",
+          "status": "False",
+          "observedGeneration": 1,
+          "lastTransitionTime": null,
+          "reason": "NotApplicable",
+          "message": ""
+        },
+        {
+          "type": "Failed",
+          "status": "False",
+          "observedGeneration": 1,
+          "lastTransitionTime": null,
+          "reason": "NotApplicable",
+          "message": ""
+        }
+      ],
+      "categoryStatuses": [
+        {
+          "domain": "communication",
+          "variant": "nccl-all-reduce",
+          "workflowRef": {
+            "name": "test-cert-archive-capture-edbca",
+            "namespace": "default"
+          },
+          "status": "InProgress"
+        }
+      ]
+    }
+  },
+  "ConfigMap/node-identity-test-cert-archive-capture": {
+    "kind": "ConfigMap",
+    "apiVersion": "v1",
+    "metadata": {
+      "name": "node-identity-test-cert-archive-capture",
+      "namespace": "default",
+      "labels": {
+        "app.kubernetes.io/managed-by": "nvcre",
+        "nvcre.nvidia.com/certification": "test-cert-archive-capture"
+      },
+      "ownerReferences": [
+        {
+          "apiVersion": "nvcre.nvidia.com/v1alpha1",
+          "kind": "Certification",
+          "name": "test-cert-archive-capture",
+          "uid": "",
+          "controller": true,
+          "blockOwnerDeletion": true
+        }
+      ]
+    },
+    "data": {
+      "node-identity.json": "[{\"name\":\"gen-17cae8-node-01\",\"kubernetesUid\":\"node-uid\",\"providerId\":\"gce://envtest/us-central1-a/instance\",\"gpuProduct\":\"NVIDIA-GB200-NVL72\",\"allocatableGpus\":0,\"labels\":{\"kubernetes.io/hostname\":\"gen-17cae8-node-01\",\"nvidia.com/gpu.clique\":\"clique-a\",\"nvidia.com/gpu.present\":\"true\",\"nvidia.com/gpu.product\":\"NVIDIA-GB200-NVL72\"}},{\"name\":\"gen-17cae8-node-02\",\"kubernetesUid\":\"node-uid\",\"providerId\":\"gce://envtest/us-central1-a/instance\",\"gpuProduct\":\"NVIDIA-GB200-NVL72\",\"allocatableGpus\":0,\"labels\":{\"kubernetes.io/hostname\":\"gen-17cae8-node-02\",\"nvidia.com/gpu.clique\":\"clique-a\",\"nvidia.com/gpu.present\":\"true\",\"nvidia.com/gpu.product\":\"NVIDIA-GB200-NVL72\"}}]"
+    }
+  },
+  "archive": {
+    "prod": []
+  }
+}

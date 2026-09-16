@@ -40,3 +40,35 @@ metrics:
     # The ServiceMonitor needs the Prometheus Operator CRDs
     # (monitoring.coreos.com/v1). Set to false on clusters without them.
     enabled: true
+
+# Results archive (ADR-075): when a Certification reaches a stable terminal
+# state, the controller writes one immutable JSON record describing the run to
+# a Google Cloud Storage bucket. Off by default; with it off the controller
+# behaves exactly as before.
+resultsArchive:
+  enabled: false
+  # Destination used by runs that name none. Empty means opt-in only: a run
+  # selects a destination with the nvcre.nvidia.com/archive-destination
+  # annotation (nvcrectl certification run --archive-to <name>).
+  default: ""
+  # Named destinations, name -> gs://bucket[/prefix]. Runs pick one by name;
+  # they can never name a bucket the controller was not configured with.
+  destinations: {}
+  #  dev: gs://nvcre-results-dev/runs
+  #  prod: gs://nvcre-results-prod/runs
+  # Recorded in every record and used in the object key. Required when enabled.
+  clusterId: ""
+  # Copy each failed Job's log tail (up to 32 KiB) into the record.
+  includeFailureLog: false
+  auth:
+    # applicationDefault: Workload Identity on GKE (bind the controller's
+    #   ServiceAccount to a Google service account with
+    #   storage.objects.create and storage.objects.get on the bucket).
+    # serviceAccountKey: mount a Secret holding a service-account JSON key and
+    #   point GOOGLE_APPLICATION_CREDENTIALS at it (clusters off GCP).
+    mode: applicationDefault
+    serviceAccountKey:
+      # Name of an existing Secret in the release namespace. Never a key value.
+      existingSecret: ""
+      # Key within the Secret that holds the JSON credentials file.
+      key: credentials.json

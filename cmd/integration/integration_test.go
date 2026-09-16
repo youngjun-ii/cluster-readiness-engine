@@ -11,7 +11,9 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +42,8 @@ import (
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/testutil"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/record"
 	_ "github.com/NVIDIA/cluster-readiness-engine/pkg/catalog"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/controller"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/podlogs"
@@ -88,7 +92,8 @@ func TestIntegration(t *testing.T) {
 		objs := createTestObjects(tt, suite.Client, tc)
 
 		fakeFetcher := buildFakeLogFetcher(tc)
-		mgr, cancel := startManager(tt, suite.Config, fakeFetcher)
+		archiveCfg, archiveStores := buildFakeArchive(cfg.Archive)
+		mgr, cancel := startManager(tt, suite.Config, fakeFetcher, archiveCfg)
 
 		// Ensure cleanup always runs, even on test failure/timeout.
 		// Without this, a timed-out test leaks objects (e.g., cluster-scoped
@@ -100,6 +105,12 @@ func TestIntegration(t *testing.T) {
 		}()
 
 		waitForCondition(tt, mgr.GetClient(), cfg)
+
+		// The archive runs after the terminal condition lands, so a wait on
+		// the condition alone would race the write.
+		if cfg.Archive != nil {
+			waitForArchive(tt, suite.Client, cfg, archiveStores)
+		}
 
 		// Verify a Complete GoodputMeasurement stays frozen across a terminal
 		// re-entry (ADR-072). Runs before collection so the golden pins it.
@@ -125,7 +136,7 @@ func TestIntegration(t *testing.T) {
 			waitForDeletion(tt, mgr.GetClient(), cfg)
 		}
 
-		tc.Actual = collectAndSerialize(tt, mgr.GetClient(), cfg, frozenGoodput, specImmutability)
+		tc.Actual = collectAndSerialize(tt, mgr.GetClient(), cfg, frozenGoodput, specImmutability, archiveStores)
 		return nil
 	})
 }
@@ -357,7 +368,7 @@ func deleteTestObjects(t *testing.T, c client.Client, objs []client.Object) {
 
 // startManager creates and starts a controller manager in-process.
 func startManager(
-	t *testing.T, cfg *rest.Config, fetcher podlogs.PodLogFetcher,
+	t *testing.T, cfg *rest.Config, fetcher podlogs.PodLogFetcher, archiveCfg *controller.ArchiveConfig,
 ) (ctrl.Manager, context.CancelFunc) {
 	t.Helper()
 
@@ -401,6 +412,7 @@ func startManager(
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
 		WorkflowRequeueInterval: 1 * time.Second,
+		Archive:                 archiveCfg,
 	}).SetupWithManager(mgr)
 	require.NoError(t, err)
 
@@ -518,7 +530,25 @@ type waitConfig struct {
 	DeleteAfterWait []collectSpec `json:"deleteAfterWait,omitempty"`
 	// WaitForDeletion lists resources that must be fully deleted before collection.
 	WaitForDeletion []collectSpec `json:"waitForDeletion,omitempty"`
-	TimeoutSeconds  int           `json:"timeoutSeconds"`
+	// Archive enables the results archive (ADR-075) on the Certification
+	// controller with an in-memory store per destination, the same way the
+	// fake PodLogFetcher stands in for the kubelet. The stores' contents are
+	// serialised into the golden under "archive".
+	Archive        *archiveSpec `json:"archive,omitempty"`
+	TimeoutSeconds int          `json:"timeoutSeconds"`
+}
+
+// archiveSpec configures the fake results archive for one case.
+type archiveSpec struct {
+	ClusterID         string            `json:"clusterId"`
+	Default           string            `json:"default,omitempty"`
+	Destinations      map[string]string `json:"destinations"`
+	IncludeFailureLog bool              `json:"includeFailureLog,omitempty"`
+	// ExpectObjects waits until the stores hold this many objects in total.
+	ExpectObjects int `json:"expectObjects,omitempty"`
+	// WaitForState waits until the waitFor object's archive-state annotation
+	// equals this value (for Skipped, Misconfigured and the like).
+	WaitForState string `json:"waitForState,omitempty"`
 }
 
 // verifySpecImmutableSpec describes one spec edit that must be rejected.
@@ -954,6 +984,7 @@ func getObject(ctx context.Context, t *testing.T, c client.Client, spec collectS
 
 func collectAndSerialize(
 	t *testing.T, c client.Client, cfg waitConfig, frozenGoodput, specImmutability map[string]any,
+	archiveStores map[string]*archive.MemoryStore,
 ) string {
 	t.Helper()
 	ctx := context.Background()
@@ -961,6 +992,9 @@ func collectAndSerialize(
 	results := make(map[string]any)
 	if frozenGoodput != nil {
 		results["frozenGoodput"] = frozenGoodput
+	}
+	if cfg.Archive != nil {
+		results["archive"] = collectArchive(t, archiveStores, cfg.Archive)
 	}
 	if specImmutability != nil {
 		results["specImmutability"] = specImmutability
@@ -1068,6 +1102,13 @@ func sanitizeObject(obj client.Object) {
 		for i := range o.Status.CategoryStatuses {
 			sanitizeNodeResultsRef(o.Status.CategoryStatuses[i].SucceededNodesRef, o.Status.CategoryStatuses[i].FailedNodesRef)
 		}
+		// The archive URI embeds the terminal date and the Certification UID.
+		if ann := o.GetAnnotations(); ann[controller.AnnotationArchiveURI] != "" {
+			ann[controller.AnnotationArchiveURI] = sanitizeArchiveURI(ann[controller.AnnotationArchiveURI])
+			o.SetAnnotations(ann)
+		}
+	case *corev1.ConfigMap:
+		sanitizeNodeIdentityConfigMap(o)
 	case *nvcrev1alpha1.WorkloadRun:
 		clearConditionTimestamps(o.Status.Conditions)
 		sanitizeNodeResultsRef(o.Status.SucceededNodesRef, o.Status.FailedNodesRef)
@@ -1342,4 +1383,195 @@ func collectTopologyMetrics(t *testing.T, namespace, workflow, topologyKey strin
 		}
 	}
 	return result
+}
+
+// ---------------------------------------------------------------------------
+// Results archive (ADR-075)
+// ---------------------------------------------------------------------------
+
+// buildFakeArchive turns the case's archive block into a controller config
+// backed by one MemoryStore per destination. Provenance is fixed so the golden
+// pins the record's shape rather than the test binary's build.
+func buildFakeArchive(spec *archiveSpec) (*controller.ArchiveConfig, map[string]*archive.MemoryStore) {
+	if spec == nil {
+		return nil, nil
+	}
+	digest := "sha256:0000000000000000000000000000000000000000000000000000000000000e57"
+	k8s := "v0.0.0-envtest"
+	cfg := &controller.ArchiveConfig{
+		Destinations:      map[string]controller.ArchiveDestination{},
+		Default:           spec.Default,
+		ClusterID:         spec.ClusterID,
+		IncludeFailureLog: spec.IncludeFailureLog,
+		Provenance: record.Provenance{
+			Controller:        record.ControllerProvenance{Version: "v0.0.0-envtest", ImageDigest: &digest},
+			Catalog:           record.CatalogProvenance{Revision: "catalog-revision-envtest"},
+			KubernetesVersion: &k8s,
+		},
+	}
+	stores := map[string]*archive.MemoryStore{}
+	for name, raw := range spec.Destinations {
+		dest, err := archive.ParseDestination(raw)
+		if err != nil {
+			panic(fmt.Sprintf("archive destination %q: %v", raw, err))
+		}
+		store := archive.NewMemoryStore()
+		stores[name] = store
+		cfg.Destinations[name] = controller.ArchiveDestination{Name: name, Destination: dest, Store: store}
+	}
+	return cfg, stores
+}
+
+// waitForArchive blocks until the archive has done what the case expects:
+// the stores hold expectObjects objects, and/or the waitFor object carries
+// the expected archive-state annotation.
+func waitForArchive(t *testing.T, c client.Client, cfg waitConfig, stores map[string]*archive.MemoryStore) {
+	t.Helper()
+	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
+	if cfg.Archive.ExpectObjects > 0 {
+		require.Eventually(t, func() bool {
+			n := 0
+			for _, s := range stores {
+				n += len(s.Keys())
+			}
+			return n >= cfg.Archive.ExpectObjects
+		}, timeout, 250*time.Millisecond, "timed out waiting for %d archived object(s)", cfg.Archive.ExpectObjects)
+	}
+	if cfg.Archive.WaitForState != "" {
+		require.Eventually(t, func() bool {
+			obj := getObject(context.Background(), t, c, collectSpec{
+				Kind: cfg.WaitFor.Kind, Name: cfg.WaitFor.Name, Namespace: cfg.WaitFor.Namespace,
+			})
+			return obj != nil && obj.GetAnnotations()[controller.AnnotationArchiveState] == cfg.Archive.WaitForState
+		}, timeout, 250*time.Millisecond, "timed out waiting for archive-state %q", cfg.Archive.WaitForState)
+	}
+}
+
+// archivedObject is one stored record as it appears in the golden.
+type archivedObject struct {
+	URI         string         `json:"uri"`
+	ContentType string         `json:"contentType"`
+	Record      *record.Record `json:"record"`
+}
+
+// collectArchive serialises every stored object, with the volatile parts of
+// the record (UIDs, timestamps, the date segment of the key) normalised the
+// same way the collected Kubernetes objects are.
+func collectArchive(
+	t *testing.T, stores map[string]*archive.MemoryStore, cfg *archiveSpec,
+) map[string][]archivedObject {
+	t.Helper()
+	out := map[string][]archivedObject{}
+	names := make([]string, 0, len(stores))
+	for n := range stores {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		dest, _ := archive.ParseDestination(cfg.Destinations[name])
+		keys := stores[name].Keys()
+		objs := make([]archivedObject, 0, len(keys))
+		for _, key := range keys {
+			body, ct, _ := stores[name].Get(key)
+			rec := &record.Record{}
+			require.NoError(t, json.Unmarshal(body, rec), "archived object %s is not a record", key)
+			sanitizeArchiveRecord(rec)
+			objs = append(objs, archivedObject{
+				URI:         sanitizeArchiveURI("gs://" + dest.Bucket + "/" + key),
+				ContentType: ct,
+				Record:      rec,
+			})
+		}
+		out[name] = objs
+	}
+	return out
+}
+
+// sanitizedNodeUID stands in for API-server-assigned Node UIDs in goldens.
+const sanitizedNodeUID = "node-uid"
+
+var (
+	archiveDateSegment = regexp.MustCompile(`date=\d{4}-\d{2}-\d{2}`)
+	archiveRunSegment  = regexp.MustCompile(`run=[0-9a-f-]{36}`)
+	uuidPattern        = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+)
+
+func sanitizeArchiveURI(uri string) string {
+	uri = archiveDateSegment.ReplaceAllString(uri, "date=DATE")
+	return archiveRunSegment.ReplaceAllString(uri, "run=UID")
+}
+
+// sanitizeArchiveRecord clears wall-clock and API-server-assigned values. A
+// placeholder rather than nil keeps "was it set" visible in the golden.
+func sanitizeArchiveRecord(rec *record.Record) {
+	epoch := metav1.NewTime(time.Unix(0, 0).UTC())
+	fix := func(t **metav1.Time) {
+		if *t != nil {
+			e := epoch
+			*t = &e
+		}
+	}
+	rec.Run.ID = "certification-uid"
+	rec.Run.CreatedAt = epoch
+	fix(&rec.Run.TerminalAt)
+	for i := range rec.Nodes {
+		n := &rec.Nodes[i]
+		if uuidPattern.MatchString(n.KubernetesUID) {
+			if n.ID == n.KubernetesUID {
+				n.ID = sanitizedNodeUID
+			}
+			n.KubernetesUID = sanitizedNodeUID
+		}
+	}
+	for ci := range rec.Categories {
+		for ii := range rec.Categories[ci].Iterations {
+			for gi := range rec.Categories[ci].Iterations[ii].Groups {
+				for ai := range rec.Categories[ci].Iterations[ii].Groups[gi].Attempts {
+					a := &rec.Categories[ci].Iterations[ii].Groups[gi].Attempts[ai]
+					fix(&a.StartTime)
+					fix(&a.CompletionTime)
+					fix(&a.WorkloadStartTime)
+					for mi := range a.Measurements {
+						m := &a.Measurements[mi]
+						fix(&m.StartTime)
+						fix(&m.CompletionTime)
+						if m.FreezeCondition != nil {
+							fix(&m.FreezeCondition.LastTransitionTime)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// sanitizeNodeIdentityConfigMap replaces the gzip payload of a node-identity
+// ConfigMap with its decoded JSON, UIDs normalised, so the golden pins what
+// was captured rather than compressed bytes that differ per run.
+func sanitizeNodeIdentityConfigMap(cm *corev1.ConfigMap) {
+	raw, ok := cm.BinaryData[record.NodeIdentityConfigMapKey]
+	if !ok {
+		return
+	}
+	ids, err := record.DecodeNodeIdentity(raw)
+	if err != nil {
+		return
+	}
+	for i := range ids {
+		if uuidPattern.MatchString(ids[i].KubernetesUID) {
+			ids[i].KubernetesUID = sanitizedNodeUID
+		}
+	}
+	decoded, err := json.Marshal(ids)
+	if err != nil {
+		return
+	}
+	delete(cm.BinaryData, record.NodeIdentityConfigMapKey)
+	if len(cm.BinaryData) == 0 {
+		cm.BinaryData = nil
+	}
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	cm.Data["node-identity.json"] = string(decoded)
 }

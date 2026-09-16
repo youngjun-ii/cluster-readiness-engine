@@ -68,3 +68,11 @@ kubectl drain <node>     # evict existing workloads
 ```
 
 After repair, uncordon the node and re-run the relevant category to confirm it passes.
+
+## Archived records
+
+Everything above is read live from the cluster and disappears with the Certification. When the controller's [results archive](../operations/results-archive.md) is enabled, each run also leaves one immutable JSON record in a GCS bucket, with the full bandwidth curve per measurement, per-node verdicts with their reasons, the coverage denominator behind an `INCOMPLETE` verdict, and a `completeness` block naming any evidence that was already gone. The Certification's `nvcre.nvidia.com/archive-uri` annotation points at it:
+
+```bash
+kubectl get certification <name> -o jsonpath='{.metadata.annotations.nvcre\.nvidia\.com/archive-uri}'
+```

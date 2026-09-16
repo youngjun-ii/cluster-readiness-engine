@@ -1,0 +1,23 @@
+{
+  "passes": [
+    {
+      "requeue": "0s",
+      "annotations": {
+        "nvcre.nvidia.com/archive-error": "archive destination \"staging\" is not configured; valid destinations: dev, prod",
+        "nvcre.nvidia.com/archive-state": "Misconfigured"
+      }
+    },
+    {
+      "requeue": "0s",
+      "annotations": {
+        "nvcre.nvidia.com/archive-error": "archive destination \"staging\" is not configured; valid destinations: dev, prod",
+        "nvcre.nvidia.com/archive-state": "Misconfigured"
+      }
+    }
+  ],
+  "storedKeys": null,
+  "storeCreates": 0,
+  "events": [
+    "Warning/ArchiveMisconfigured"
+  ]
+}

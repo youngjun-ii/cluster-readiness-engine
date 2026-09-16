@@ -1,0 +1,20 @@
+{
+  "passes": [
+    {
+      "requeue": "0s",
+      "annotations": {
+        "(object)": "deleted"
+      }
+    }
+  ],
+  "storedKeys": [
+    "prod:runs/v=1/cluster=voyager-7/date=2026-09-16/run=0f1e2d3c-0000-4000-8000-0000000000aa/record.json"
+  ],
+  "storeCreates": 1,
+  "events": [
+    "Normal/Archived"
+  ],
+  "finalizerKept": false,
+  "recordVerdict": "PASSED",
+  "recordClusterId": "voyager-7"
+}
