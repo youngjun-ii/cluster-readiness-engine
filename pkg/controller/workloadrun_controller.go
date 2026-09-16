@@ -519,8 +519,8 @@ func buildWRConfigMapDep(name string, data map[string]string) nvcrev1alpha1.Depe
 		"apiVersion": "v1",
 		"kind":       kindConfigMap,
 		"metadata": map[string]any{
-			"name":   fmt.Sprintf("%s-config", name),
-			"labels": map[string]any{"app": name},
+			"name":    fmt.Sprintf("%s-config", name),
+			keyLabels: map[string]any{"app": name},
 		},
 		"data": data,
 	}
@@ -534,8 +534,8 @@ func buildWRPVCDep(name string, checkpoint *nvcrev1alpha1.WorkloadRunCheckpoint)
 		"apiVersion": "v1",
 		"kind":       "PersistentVolumeClaim",
 		"metadata": map[string]any{
-			"name":   fmt.Sprintf("%s-checkpoint-pvc", name),
-			"labels": map[string]any{"app": name},
+			"name":    fmt.Sprintf("%s-checkpoint-pvc", name),
+			keyLabels: map[string]any{"app": name},
 		},
 		"spec": map[string]any{
 			"accessModes": []string{"ReadWriteMany"},

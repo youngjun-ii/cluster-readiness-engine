@@ -22,7 +22,7 @@ jobTemplate:
             - /bin/bash
           args:
             - /config/train.sh
-          image: nvcr.io/nvidia/pytorch:25.08-py3
+          image: nvcr.io/nvidia/pytorch:26.01-py3
         {{- if .ImagePullSecrets }}
         runtimePatches:
         - manager: nvcre.nvidia.com/catalog
@@ -96,7 +96,7 @@ dependencies:
                       type: RuntimeDefault
                   initContainers:
                   - name: megatron-clone
-                    image: nvcr.io/nvidia/pytorch:25.08-py3
+                    image: nvcr.io/nvidia/pytorch:26.01-py3
                     command: ["/bin/bash", "-c"]
                     args:
                     - |
@@ -110,7 +110,7 @@ dependencies:
                       mountPath: /mnt/workspace
                   containers:
                   - name: node
-                    image: nvcr.io/nvidia/pytorch:25.08-py3
+                    image: nvcr.io/nvidia/pytorch:26.01-py3
                     env:
                     - name: NVTE_FWD_LAYERNORM_SM_MARGIN
                       value: "16"
@@ -268,9 +268,11 @@ overrides:
       in: [gb200, gb300]
   dependencies:
 {{ lib "deps/gb200-compute-domain-and-dra-torch.yaml" . | indent 2 }}
+{{- if ne .TestScale "intra-node" }}
   orchestration:
     topology:
       topologyKey: nvidia.com/gpu.clique
+{{- end }}
 # --- AWS + GB200 (EFA) ---
 - when:
     platform:
