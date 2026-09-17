@@ -37,6 +37,7 @@ nvcrectl certification run --category communication/nccl-all-reduce [flags]
 | `--max-restarts` | `0` | Maximum checkpoint restarts for training workloads (0 = catalog default) |
 | `--storage-class` | — | StorageClass for PVC dependencies created by catalog entries |
 | `--results-file` | — | Write the certification report as JSON to this path (requires `--wait`) |
+| `--archive-to` | — | Name of a controller-configured [results-archive](../operations/results-archive.md) destination for this run; sets the `nvcre.nvidia.com/archive-destination` annotation |
 | `--controller-pull-secret` | — | Token for controller registry auth during `--setup` (e.g. GitHub PAT for `ghcr.io`) — separate from workload image credentials |
 | `--workload-registry` | — | Registry server for workload image pull (e.g. `nvcr.io`, `ghcr.io`) — required when `--workload-registry-password` is set |
 | `--workload-registry-username` | — | Registry username for workload image pull (e.g. `$oauthtoken` for NGC) — required when `--workload-registry-password` is set |

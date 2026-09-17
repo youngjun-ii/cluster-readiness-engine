@@ -1,0 +1,11 @@
+{
+  "args": [],
+  "env": [
+    {
+      "name": "NVCRE_CONTROLLER_IMAGE_DIGEST",
+      "value": "sha256:735ad1e142a378b0919510bd1fc113cd53ab754bc79b7f0980d647d50a914523"
+    }
+  ],
+  "volumeMounts": [],
+  "volumes": []
+}

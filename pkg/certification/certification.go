@@ -532,6 +532,7 @@ func newRunCommand(version string) *cobra.Command {
 	var controllerPullSecret string
 	var workloadRegistry, workloadRegistryUsername, workloadRegistryPassword string
 	var resultsFile string
+	var archiveTo string
 	var timeout time.Duration
 
 	configFlags := kubeconfig.NewConfigFlags(true)
@@ -601,6 +602,9 @@ Use --cleanup to teardown installed components after completion.`,
 			}
 			cfg.version = version
 			cfg.resultsFile = resultsFile
+			if archiveTo != "" {
+				setArchiveDestination(cfg.cert, archiveTo)
+			}
 			cfg.timeout, cfg.timeoutDerived = resolveWaitTimeout(
 				cfg.cert, timeout, cmd.Flags().Changed("timeout"))
 			return executeCertificationRun(cfg)
@@ -651,9 +655,23 @@ Use --cleanup to teardown installed components after completion.`,
 		"Timeout for --wait (when not set, derived from the selected categories' timeoutPerJob budgets, floored at 30m; on timeout, print a partial report and leave the certification running unless --cleanup is set)")
 	cmd.Flags().StringVar(&resultsFile, "results-file", "",
 		"Write certification report as JSON to this file path (requires --wait)")
+	cmd.Flags().StringVar(&archiveTo, "archive-to", "",
+		"Name of a controller-configured results-archive destination to write this run's record to "+
+			"(sets the nvcre.nvidia.com/archive-destination annotation; the controller must have the archive enabled)")
 	configFlags.AddFlags(cmd.Flags())
 
 	return cmd
+}
+
+// setArchiveDestination stamps the annotation the controller reads to pick a
+// results-archive destination. It does nothing else: the
+// controller owns the credentials and the list of valid names, and an unknown
+// name is reported on the Certification, not here.
+func setArchiveDestination(cert *nvcrev1alpha1.Certification, name string) {
+	if cert.Annotations == nil {
+		cert.Annotations = map[string]string{}
+	}
+	cert.Annotations[controller.AnnotationArchiveDestination] = name
 }
 
 // ---------------------------------------------------------------------------

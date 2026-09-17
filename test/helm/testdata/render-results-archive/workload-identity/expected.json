@@ -1,0 +1,12 @@
+{
+  "args": [
+    "--results-archive-destination=dev=gs://nvcre-results-dev",
+    "--results-archive-destination=prod=gs://nvcre-results-prod/runs",
+    "--results-archive-default=prod",
+    "--results-archive-cluster-id=cluster-a",
+    "--results-archive-include-failure-log=true"
+  ],
+  "env": [],
+  "volumeMounts": [],
+  "volumes": []
+}

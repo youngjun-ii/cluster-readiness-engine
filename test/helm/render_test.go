@@ -133,7 +133,7 @@ func managerArgs(rendered []byte) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode helm template output: %w", err)
 		}
-		if obj.GetKind() != "Deployment" {
+		if obj.GetKind() != kindDeployment {
 			continue
 		}
 
@@ -142,7 +142,7 @@ func managerArgs(rendered []byte) ([]string, error) {
 			return nil, fmt.Errorf("convert manager Deployment: %w", err)
 		}
 		for i := range dep.Spec.Template.Spec.Containers {
-			if dep.Spec.Template.Spec.Containers[i].Name == "manager" {
+			if dep.Spec.Template.Spec.Containers[i].Name == managerContainer {
 				return dep.Spec.Template.Spec.Containers[i].Args, nil
 			}
 		}
@@ -162,7 +162,7 @@ func managerImage(rendered []byte) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("decode helm template output: %w", err)
 		}
-		if obj.GetKind() != "Deployment" {
+		if obj.GetKind() != kindDeployment {
 			continue
 		}
 		var dep appsv1.Deployment
@@ -170,7 +170,7 @@ func managerImage(rendered []byte) (string, error) {
 			return "", fmt.Errorf("convert manager Deployment: %w", err)
 		}
 		for i := range dep.Spec.Template.Spec.Containers {
-			if dep.Spec.Template.Spec.Containers[i].Name == "manager" {
+			if dep.Spec.Template.Spec.Containers[i].Name == managerContainer {
 				return dep.Spec.Template.Spec.Containers[i].Image, nil
 			}
 		}

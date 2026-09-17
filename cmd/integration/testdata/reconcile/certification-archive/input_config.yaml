@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Results archive, terminal-branch emit: a Certification whose only
+# Workflow is already terminal reaches Succeeded, the controller verifies the
+# owned Workflows are terminal, builds the record from the Workflow, its Job,
+# the BandwidthMeasurement and the node-identity snapshot, and writes it once
+# to the fake store. The golden pins the record and the annotations.
+waitFor:
+  kind: Certification
+  name: test-cert-archive
+  namespace: default
+  condition: Succeeded
+archive:
+  clusterId: envtest
+  default: prod
+  destinations:
+    prod: gs://nvcre-results/runs
+    dev: gs://nvcre-results-dev
+  expectObjects: 1
+  waitForState: Succeeded
+collect:
+  - kind: Certification
+    name: test-cert-archive
+    namespace: default

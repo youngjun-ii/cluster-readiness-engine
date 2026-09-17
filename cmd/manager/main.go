@@ -9,6 +9,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
+	"sort"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -30,6 +33,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/record"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/catalog"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/controller"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/podlogs"
@@ -38,6 +43,12 @@ import (
 
 // version is set at build time via -ldflags.
 var version = "dev"
+
+// controllerImageDigestEnv carries the controller's own image digest into
+// the results archive record. The Helm chart sets it from
+// manager.image.digest; a tag-based deploy leaves it unset and the record
+// says null rather than guessing.
+const controllerImageDigestEnv = "NVCRE_CONTROLLER_IMAGE_DIGEST"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -52,6 +63,111 @@ const (
 type controllerConcurrencyOptions struct {
 	maxConcurrentReconciles            int
 	measurementMaxConcurrentReconciles int
+}
+
+// resultsArchiveOptions is the flag surface of the results archive.
+// The archive is enabled by naming at least one destination.
+type resultsArchiveOptions struct {
+	// destinations are "name=gs://bucket/prefix" pairs.
+	destinations      []string
+	defaultName       string
+	clusterID         string
+	includeFailureLog bool
+}
+
+// clusterIDPattern bounds the cluster id: it becomes a path segment of every
+// object key, so it must not carry separators or spaces.
+var clusterIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// parse validates the flags and returns the named destinations, without
+// building stores. Nil means the archive is disabled.
+func (o resultsArchiveOptions) parse() (map[string]archive.Destination, error) {
+	if len(o.destinations) == 0 {
+		if o.defaultName != "" || o.clusterID != "" || o.includeFailureLog {
+			return nil, fmt.Errorf("--results-archive-* flags need at least one --results-archive-destination")
+		}
+		return nil, nil
+	}
+	dests := make(map[string]archive.Destination, len(o.destinations))
+	for _, raw := range o.destinations {
+		name, url, ok := strings.Cut(raw, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" || strings.TrimSpace(url) == "" {
+			return nil, fmt.Errorf("--results-archive-destination %q must be name=gs://bucket/prefix", raw)
+		}
+		if _, dup := dests[name]; dup {
+			return nil, fmt.Errorf("--results-archive-destination %q is defined twice", name)
+		}
+		d, err := archive.ParseDestination(strings.TrimSpace(url))
+		if err != nil {
+			return nil, fmt.Errorf("--results-archive-destination %q: %w", raw, err)
+		}
+		dests[name] = d
+	}
+	if o.defaultName != "" {
+		if _, ok := dests[o.defaultName]; !ok {
+			names := make([]string, 0, len(dests))
+			for n := range dests {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			return nil, fmt.Errorf("--results-archive-default %q is not a configured destination (have: %s)",
+				o.defaultName, strings.Join(names, ", "))
+		}
+	}
+	if !clusterIDPattern.MatchString(o.clusterID) {
+		return nil, fmt.Errorf(
+			"--results-archive-cluster-id is required when the archive is enabled and must match %s", clusterIDPattern)
+	}
+	return dests, nil
+}
+
+// build turns the parsed destinations into a controller config with one GCS
+// store per destination sharing one credential.
+func (o resultsArchiveOptions) build(
+	ctx context.Context, dests map[string]archive.Destination, prov record.Provenance,
+) (*controller.ArchiveConfig, error) {
+	if dests == nil {
+		return nil, nil
+	}
+	tokens, err := archive.DefaultTokenSource(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("results archive credentials: %w", err)
+	}
+	cfg := &controller.ArchiveConfig{
+		Destinations:      make(map[string]controller.ArchiveDestination, len(dests)),
+		Default:           o.defaultName,
+		ClusterID:         o.clusterID,
+		IncludeFailureLog: o.includeFailureLog,
+		Provenance:        prov,
+	}
+	for name, d := range dests {
+		cfg.Destinations[name] = controller.ArchiveDestination{
+			Destination: d,
+			Store:       archive.NewGCSStore(d.Bucket, tokens),
+		}
+	}
+	return cfg, nil
+}
+
+// controllerProvenance is what the controller knows about itself for the
+// record. The Kubernetes version is read once from the discovery endpoint
+// and left null if that fails; the archive is not worth blocking startup on.
+func controllerProvenance(clientset kubernetes.Interface) record.Provenance {
+	prov := record.Provenance{
+		Controller: record.ControllerProvenance{Version: version},
+		Catalog:    record.CatalogProvenance{Revision: catalog.Revision()},
+	}
+	if d := os.Getenv(controllerImageDigestEnv); d != "" {
+		prov.Controller.ImageDigest = &d
+	}
+	if v, err := clientset.Discovery().ServerVersion(); err == nil && v != nil && v.GitVersion != "" {
+		gv := v.GitVersion
+		prov.KubernetesVersion = &gv
+	} else if err != nil {
+		setupLog.Error(err, "could not read the Kubernetes version for the results archive")
+	}
+	return prov
 }
 
 func (o controllerConcurrencyOptions) validate() error {
@@ -94,6 +210,7 @@ func newRootCommand() *cobra.Command {
 		maxConcurrentReconciles:            defaultMaxConcurrentReconciles,
 		measurementMaxConcurrentReconciles: defaultMeasurementMaxConcurrentReconciles,
 	}
+	var archiveOpts resultsArchiveOptions
 
 	// Bridge zap flags (registered on standard flag.CommandLine) into cobra
 	opts := zap.Options{Development: true}
@@ -105,6 +222,10 @@ func newRootCommand() *cobra.Command {
 		Version: version,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := concurrency.validate(); err != nil {
+				return err
+			}
+			archiveDests, err := archiveOpts.parse()
+			if err != nil {
 				return err
 			}
 
@@ -206,6 +327,16 @@ func newRootCommand() *cobra.Command {
 				return fmt.Errorf("unable to create kubernetes clientset: %w", err)
 			}
 
+			var archiveCfg *controller.ArchiveConfig
+			if archiveDests != nil {
+				archiveCfg, err = archiveOpts.build(context.Background(), archiveDests, controllerProvenance(clientset))
+				if err != nil {
+					return err
+				}
+				setupLog.Info("results archive enabled",
+					"destinations", len(archiveCfg.Destinations), "default", archiveCfg.Default, "clusterId", archiveCfg.ClusterID)
+			}
+
 			if err := (&controller.JobReconciler{
 				Client:                  mgr.GetClient(),
 				Scheme:                  mgr.GetScheme(),
@@ -229,6 +360,7 @@ func newRootCommand() *cobra.Command {
 				Scheme:                  mgr.GetScheme(),
 				Recorder:                mgr.GetEventRecorder("certification-controller"),
 				MaxConcurrentReconciles: concurrency.maxConcurrentReconciles,
+				Archive:                 archiveCfg,
 			}).SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("unable to create controller Certification: %w", err)
 			}
@@ -301,6 +433,17 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	cmd.Flags().BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	cmd.Flags().StringArrayVar(&archiveOpts.destinations, "results-archive-destination", nil,
+		"Named results-archive destination as name=gs://bucket/prefix (repeatable). "+
+			"Naming at least one enables the archive; a Certification selects one with the "+
+			"nvcre.nvidia.com/archive-destination annotation.")
+	cmd.Flags().StringVar(&archiveOpts.defaultName, "results-archive-default", "",
+		"Results-archive destination used by Certifications that name none. Empty means opt-in only.")
+	cmd.Flags().StringVar(&archiveOpts.clusterID, "results-archive-cluster-id", "",
+		"Cluster identifier recorded in every archived result and used in the object key. "+
+			"Required when the archive is enabled.")
+	cmd.Flags().BoolVar(&archiveOpts.includeFailureLog, "results-archive-include-failure-log", false,
+		"Include each failed Job's log tail (up to 32 KiB) in the archived record.")
 
 	cmd.Flags().AddGoFlagSet(flag.CommandLine)
 

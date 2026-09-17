@@ -1,0 +1,9 @@
+# Enabled off GCP with a mounted service-account key: the Secret is mounted
+# read-only and GOOGLE_APPLICATION_CREDENTIALS points at the file inside it.
+# The Secret is named, never carried as a value.
+set:
+  - resultsArchive.enabled=true
+  - resultsArchive.clusterId=onprem-a
+  - resultsArchive.destinations.prod=gs://nvcre-results-prod/runs
+  - resultsArchive.auth.mode=serviceAccountKey
+  - resultsArchive.auth.serviceAccountKey.existingSecret=nvcre-gcs-writer

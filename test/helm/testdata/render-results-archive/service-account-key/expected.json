@@ -1,0 +1,33 @@
+{
+  "args": [
+    "--results-archive-destination=prod=gs://nvcre-results-prod/runs",
+    "--results-archive-cluster-id=onprem-a"
+  ],
+  "env": [
+    {
+      "name": "GOOGLE_APPLICATION_CREDENTIALS",
+      "value": "/var/run/secrets/nvcre/results-archive/credentials.json"
+    }
+  ],
+  "volumeMounts": [
+    {
+      "name": "results-archive-credentials",
+      "readOnly": true,
+      "mountPath": "/var/run/secrets/nvcre/results-archive"
+    }
+  ],
+  "volumes": [
+    {
+      "name": "results-archive-credentials",
+      "secret": {
+        "secretName": "nvcre-gcs-writer",
+        "items": [
+          {
+            "key": "credentials.json",
+            "path": "credentials.json"
+          }
+        ]
+      }
+    }
+  ]
+}

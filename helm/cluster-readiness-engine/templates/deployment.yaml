@@ -34,8 +34,36 @@ spec:
         - --health-probe-bind-address=:8081
         - --max-concurrent-reconciles={{ required "manager.maxConcurrentReconciles is required" .Values.manager.maxConcurrentReconciles }}
         - --measurement-max-concurrent-reconciles={{ required "manager.measurementMaxConcurrentReconciles is required" .Values.manager.measurementMaxConcurrentReconciles }}
+        {{- with .Values.resultsArchive }}
+        {{- if .enabled }}
+        {{- if not .destinations }}
+        {{- fail "resultsArchive.enabled requires at least one entry in resultsArchive.destinations" }}
+        {{- end }}
+        {{- range $name, $url := .destinations }}
+        - --results-archive-destination={{ $name }}={{ $url }}
+        {{- end }}
+        {{- if .default }}
+        - --results-archive-default={{ .default }}
+        {{- end }}
+        - --results-archive-cluster-id={{ required "resultsArchive.clusterId is required when resultsArchive.enabled is true" .clusterId }}
+        {{- if .includeFailureLog }}
+        - --results-archive-include-failure-log=true
+        {{- end }}
+        {{- end }}
+        {{- end }}
         command:
         - /manager
+        {{- $env := list }}
+        {{- if .Values.manager.image.digest }}
+        {{- $env = append $env (dict "name" "NVCRE_CONTROLLER_IMAGE_DIGEST" "value" .Values.manager.image.digest) }}
+        {{- end }}
+        {{- if and .Values.resultsArchive.enabled (eq .Values.resultsArchive.auth.mode "serviceAccountKey") }}
+        {{- $env = append $env (dict "name" "GOOGLE_APPLICATION_CREDENTIALS" "value" (printf "/var/run/secrets/nvcre/results-archive/%s" .Values.resultsArchive.auth.serviceAccountKey.key)) }}
+        {{- end }}
+        {{- if $env }}
+        env:
+          {{- toYaml $env | nindent 10 }}
+        {{- end }}
         {{- /*
           A digest wins over a tag. Verification is digest-addressed, so an
           operator who checked a signature and then deployed by tag deployed
@@ -69,7 +97,14 @@ spec:
             drop:
               - ALL
           readOnlyRootFilesystem: true
+        {{- if and .Values.resultsArchive.enabled (eq .Values.resultsArchive.auth.mode "serviceAccountKey") }}
+        volumeMounts:
+        - name: results-archive-credentials
+          mountPath: /var/run/secrets/nvcre/results-archive
+          readOnly: true
+        {{- else }}
         volumeMounts: []
+        {{- end }}
       {{- with .Values.manager.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -84,4 +119,14 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if and .Values.resultsArchive.enabled (eq .Values.resultsArchive.auth.mode "serviceAccountKey") }}
+      volumes:
+      - name: results-archive-credentials
+        secret:
+          secretName: {{ required "resultsArchive.auth.serviceAccountKey.existingSecret is required for auth.mode serviceAccountKey" .Values.resultsArchive.auth.serviceAccountKey.existingSecret }}
+          items:
+          - key: {{ .Values.resultsArchive.auth.serviceAccountKey.key }}
+            path: {{ .Values.resultsArchive.auth.serviceAccountKey.key }}
+      {{- else }}
       volumes: []
+      {{- end }}

@@ -1,0 +1,155 @@
+{
+  "Certification/test-cert-archive": {
+    "kind": "Certification",
+    "apiVersion": "nvcre.nvidia.com/v1alpha1",
+    "metadata": {
+      "name": "test-cert-archive",
+      "namespace": "default",
+      "annotations": {
+        "nvcre.nvidia.com/archive-attempts": "1",
+        "nvcre.nvidia.com/archive-state": "Succeeded",
+        "nvcre.nvidia.com/archive-uri": "gs://nvcre-results/runs/v=1/cluster=envtest/date=DATE/run=UID/record.json",
+        "nvcre.nvidia.com/node-identity-ref": "node-identity-test-cert-archive"
+      },
+      "finalizers": [
+        "nvcre.nvidia.com/certification-finalizer"
+      ]
+    },
+    "spec": {
+      "target": {
+        "nodeSelector": {
+          "nvidia.com/gpu.present": "true",
+          "nvidia.com/gpu.product": "NVIDIA-GB200-NVL72"
+        }
+      },
+      "categories": [
+        {
+          "domain": "communication",
+          "variant": "nccl-all-reduce",
+          "options": {
+            "thresholds": {
+              "busBandwidthGBps": "value \u003e= 100"
+            }
+          }
+        }
+      ],
+      "nodesPerJob": 2
+    },
+    "status": {
+      "conditions": [
+        {
+          "type": "InProgress",
+          "status": "False",
+          "observedGeneration": 1,
+          "lastTransitionTime": null,
+          "reason": "NotApplicable",
+          "message": ""
+        },
+        {
+          "type": "Succeeded",
+          "status": "True",
+          "observedGeneration": 1,
+          "lastTransitionTime": null,
+          "reason": "AllWorkflowsSucceeded",
+          "message": "All certification categories completed successfully"
+        },
+        {
+          "type": "Failed",
+          "status": "False",
+          "observedGeneration": 1,
+          "lastTransitionTime": null,
+          "reason": "NotApplicable",
+          "message": ""
+        }
+      ],
+      "categoryStatuses": [
+        {
+          "domain": "communication",
+          "variant": "nccl-all-reduce",
+          "workflowRef": {
+            "name": "test-cert-archive-communication-nccl-all-reduce",
+            "namespace": "default"
+          },
+          "status": "Succeeded"
+        }
+      ]
+    }
+  },
+  "archive": {
+    "dev": [],
+    "prod": [
+      {
+        "uri": "gs://nvcre-results/runs/v=1/cluster=envtest/date=DATE/run=UID/record.json",
+        "contentType": "application/json",
+        "verdict": "PASSED",
+        "coverage": {
+          "targeted": 2,
+          "eligible": 2,
+          "tested": 2,
+          "outcomes": {
+            "passed": 2,
+            "failed": 0,
+            "inconclusive": 0,
+            "excluded": 0
+          }
+        },
+        "completeness": "complete",
+        "gaps": [],
+        "provenance": {
+          "controller": {
+            "version": "v0.0.0-envtest",
+            "imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000e57"
+          },
+          "catalog": {
+            "revision": "catalog-revision-envtest"
+          },
+          "kubernetesVersion": "v0.0.0-envtest",
+          "workloadImages": [
+            {
+              "category": "communication/nccl-all-reduce",
+              "requested": "nvcr.io/nvidia/pytorch:26.01-py3",
+              "resolvedDigest": null
+            }
+          ]
+        },
+        "nodes": [
+          {
+            "name": "archive-node-01",
+            "identity": "system-only",
+            "outcome": "Passed"
+          },
+          {
+            "name": "archive-node-02",
+            "identity": "system-only",
+            "outcome": "Passed"
+          }
+        ],
+        "categories": [
+          {
+            "domain": "communication",
+            "variant": "nccl-all-reduce",
+            "status": "Succeeded",
+            "groups": [
+              {
+                "name": "group-0",
+                "phase": "Succeeded",
+                "jobOutcome": "SUCCEEDED",
+                "groupOutcome": "SUCCEEDED",
+                "measurements": [
+                  "bandwidth:true"
+                ],
+                "thresholds": [
+                  "busBandwidthGBps=459.56:true"
+                ],
+                "verdicts": [
+                  "archive-node-01=Passed/",
+                  "archive-node-02=Passed/"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
