@@ -69,9 +69,8 @@ const (
 
 // Attribution says what a failed verdict is evidence about.
 const (
-	AttributionNode   = "node"
-	AttributionGroup  = "group"
-	AttributionFabric = "fabric"
+	AttributionNode  = "node"
+	AttributionGroup = "group"
 )
 
 // Completeness states and gap codes.
@@ -79,20 +78,19 @@ const (
 	CompletenessComplete = "complete"
 	CompletenessPartial  = "partial"
 
-	GapDiagnoseMultiRound        = "diagnose-multi-round"
-	GapRetriedAttemptsMissing    = "retried-attempts-missing"
-	GapIterationEvidenceMissing  = "iteration-evidence-missing"
-	GapJobDeleted                = "job-deleted"
-	GapWorkflowMissing           = "workflow-missing"
-	GapNodeIdentityNotCaptured   = "node-identity-not-captured"
-	GapFailedNodesUnreadable     = "failed-nodes-unreadable"
-	GapMeasurementsUnlisted      = "measurements-unlisted"
-	GapJobsUnlisted              = "jobs-unlisted"
-	GapNodeVerdictReasonUnknown  = "node-verdict-reason-unknown"
-	GapGroupNotRunAtTerminal     = "group-not-run"
-	GapCategoryNeverStarted      = "category-never-started"
-	GapNodeIdentityReadFailed    = "node-identity-read-failed"
-	GapWorkloadImageUnresolvable = "workload-image-digest-unresolved"
+	GapDiagnoseMultiRound       = "diagnose-multi-round"
+	GapRetriedAttemptsMissing   = "retried-attempts-missing"
+	GapIterationEvidenceMissing = "iteration-evidence-missing"
+	GapJobDeleted               = "job-deleted"
+	GapWorkflowMissing          = "workflow-missing"
+	GapNodeIdentityNotCaptured  = "node-identity-not-captured"
+	GapFailedNodesUnreadable    = "failed-nodes-unreadable"
+	GapMeasurementsUnlisted     = "measurements-unlisted"
+	GapJobsUnlisted             = "jobs-unlisted"
+	GapNodeVerdictReasonUnknown = "node-verdict-reason-unknown"
+	GapGroupNotRunAtTerminal    = "group-not-run"
+	GapCategoryNeverStarted     = "category-never-started"
+	GapNodeIdentityReadFailed   = "node-identity-read-failed"
 )
 
 // Identity completeness values for nodes.

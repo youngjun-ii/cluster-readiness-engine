@@ -143,7 +143,6 @@ func (o resultsArchiveOptions) build(
 	}
 	for name, d := range dests {
 		cfg.Destinations[name] = controller.ArchiveDestination{
-			Name:        name,
 			Destination: d,
 			Store:       archive.NewGCSStore(d.Bucket, tokens),
 		}

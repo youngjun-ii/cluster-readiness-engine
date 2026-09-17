@@ -80,9 +80,8 @@ const (
 	maxConfigMapNameLen = 253
 )
 
-// ArchiveDestination is one named place records can go.
+// ArchiveDestination is one configured place records can go.
 type ArchiveDestination struct {
-	Name        string
 	Destination archive.Destination
 	Store       archive.Store
 }

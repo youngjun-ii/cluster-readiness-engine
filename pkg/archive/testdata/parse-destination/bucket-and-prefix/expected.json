@@ -1,7 +1,0 @@
-{
-  "bucket": "nvcre-results",
-  "prefix": "runs/prod",
-  "string": "gs://nvcre-results/runs/prod",
-  "key": "runs/prod/v=1/run=abc/record.json",
-  "uri": "gs://nvcre-results/runs/prod/v=1/run=abc/record.json"
-}

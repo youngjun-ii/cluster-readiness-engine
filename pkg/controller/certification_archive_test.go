@@ -403,7 +403,7 @@ func runArchiveScenario(t *testing.T, in archiveTestInput) (*archiveTestOutput, 
 			require.NoError(t, err)
 			store := archive.NewMemoryStore()
 			stores[name] = store
-			cfg.Destinations[name] = ArchiveDestination{Name: name, Destination: d, Store: store}
+			cfg.Destinations[name] = ArchiveDestination{Destination: d, Store: store}
 		}
 		r.Archive = cfg
 	}
@@ -414,7 +414,7 @@ func runArchiveScenario(t *testing.T, in archiveTestInput) (*archiveTestOutput, 
 		sel = r.selectArchiveDestination(cert)
 	}
 	if sel.dest != nil {
-		store := stores[sel.dest.Name]
+		store := sel.dest.Store.(*archive.MemoryStore)
 		for _, f := range in.StoreFailures {
 			store.FailNext(f.Count, archiveFailure(f.Kind))
 		}
@@ -639,7 +639,7 @@ func TestCaptureNodeIdentity(t *testing.T) {
 		dest, _ := archive.ParseDestination("gs://b/p")
 		return &CertificationReconciler{Client: c, Scheme: scheme, Archive: &ArchiveConfig{
 			Default:      "d",
-			Destinations: map[string]ArchiveDestination{"d": {Name: "d", Destination: dest, Store: archive.NewMemoryStore()}},
+			Destinations: map[string]ArchiveDestination{"d": {Destination: dest, Store: archive.NewMemoryStore()}},
 		}}, c
 	}
 

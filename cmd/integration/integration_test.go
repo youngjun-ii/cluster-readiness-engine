@@ -1417,7 +1417,7 @@ func buildFakeArchive(spec *archiveSpec) (*controller.ArchiveConfig, map[string]
 		}
 		store := archive.NewMemoryStore()
 		stores[name] = store
-		cfg.Destinations[name] = controller.ArchiveDestination{Name: name, Destination: dest, Store: store}
+		cfg.Destinations[name] = controller.ArchiveDestination{Destination: dest, Store: store}
 	}
 	return cfg, stores
 }

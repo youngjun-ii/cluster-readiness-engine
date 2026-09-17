@@ -5,78 +5,97 @@ package archive
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
-	"sigs.k8s.io/yaml"
-
-	"github.com/NVIDIA/cluster-readiness-engine/pkg/testutil"
 )
 
 // ParseDestination is the only place a gs:// URL from configuration is
 // interpreted, so the accepted and rejected shapes are pinned.
 func TestParseDestination(t *testing.T) {
-	p := testutil.TestCaseParser{Subdir: "parse-destination"}
-	p.TestDir(t, func(tc *testutil.TestCase) error {
-		var in struct {
-			Raw string `yaml:"raw"`
-			Key string `yaml:"key"`
-		}
-		if err := yaml.Unmarshal([]byte(tc.Inputs["input.yaml"]), &in); err != nil {
-			return err
-		}
-		d, err := ParseDestination(in.Raw)
-		if err != nil {
-			return err
-		}
-		out := struct {
-			Bucket string `json:"bucket"`
-			Prefix string `json:"prefix"`
-			String string `json:"string"`
-			Key    string `json:"key,omitempty"`
-			URI    string `json:"uri,omitempty"`
-		}{Bucket: d.Bucket, Prefix: d.Prefix, String: d.String()}
-		if in.Key != "" {
-			out.Key = d.Key(in.Key)
-			out.URI = d.URI(in.Key)
-		}
-		b, err := json.MarshalIndent(out, "", "  ")
-		if err != nil {
-			return err
-		}
-		tc.Actual = string(b) + "\n"
-		return nil
-	})
+	tests := []struct {
+		name        string
+		raw         string
+		key         string
+		want        Destination
+		wantString  string
+		wantKey     string
+		wantURI     string
+		errContains string
+	}{
+		{
+			name:       "bucket and prefix",
+			raw:        "gs://nvcre-results/runs/prod",
+			key:        "v=1/run=abc/record.json",
+			want:       Destination{Bucket: "nvcre-results", Prefix: "runs/prod"},
+			wantString: "gs://nvcre-results/runs/prod",
+			wantKey:    "runs/prod/v=1/run=abc/record.json",
+			wantURI:    "gs://nvcre-results/runs/prod/v=1/run=abc/record.json",
+		},
+		{
+			name:       "bucket only",
+			raw:        "gs://nvcre-results",
+			key:        "v=1/run=abc/record.json",
+			want:       Destination{Bucket: "nvcre-results"},
+			wantString: "gs://nvcre-results",
+			wantKey:    "v=1/run=abc/record.json",
+			wantURI:    "gs://nvcre-results/v=1/run=abc/record.json",
+		},
+		{
+			name:       "trailing slash prefix",
+			raw:        "gs://nvcre-results/runs/",
+			key:        "/v=1/run=abc/record.json",
+			want:       Destination{Bucket: "nvcre-results", Prefix: "runs"},
+			wantString: "gs://nvcre-results/runs",
+			wantKey:    "runs/v=1/run=abc/record.json",
+			wantURI:    "gs://nvcre-results/runs/v=1/run=abc/record.json",
+		},
+		{name: "empty bucket", raw: "gs:///runs", errContains: "has no bucket"},
+		{name: "no scheme", raw: "s3://nvcre-results/runs", errContains: "must start with gs://"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := ParseDestination(tt.raw)
+			if tt.errContains != "" {
+				require.ErrorContains(t, err, tt.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, d)
+			require.Equal(t, tt.wantString, d.String())
+			require.Equal(t, tt.wantKey, d.Key(tt.key))
+			require.Equal(t, tt.wantURI, d.URI(tt.key))
+		})
+	}
 }
 
 // The backoff ladder is what keeps a missing bucket or a revoked permission
 // from turning into a hot loop against the API, so its shape is pinned.
 func TestBackoff(t *testing.T) {
-	p := testutil.TestCaseParser{Subdir: "backoff"}
-	p.TestDir(t, func(tc *testutil.TestCase) error {
-		var in struct {
-			Attempts []int `yaml:"attempts"`
-		}
-		if err := yaml.Unmarshal([]byte(tc.Inputs["input.yaml"]), &in); err != nil {
-			return err
-		}
-		type row struct {
-			Attempt int    `json:"attempt"`
-			Delay   string `json:"delay"`
-		}
-		rows := make([]row, 0, len(in.Attempts))
-		for _, a := range in.Attempts {
-			rows = append(rows, row{Attempt: a, Delay: Backoff(a).String()})
-		}
-		b, err := json.MarshalIndent(rows, "", "  ")
-		if err != nil {
-			return err
-		}
-		tc.Actual = string(b) + "\n"
-		return nil
-	})
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 0, want: 10 * time.Second},
+		{attempt: 1, want: 10 * time.Second},
+		{attempt: 2, want: 20 * time.Second},
+		{attempt: 3, want: 40 * time.Second},
+		{attempt: 4, want: 80 * time.Second},
+		{attempt: 5, want: 160 * time.Second},
+		{attempt: 6, want: 320 * time.Second},
+		{attempt: 7, want: 640 * time.Second},
+		{attempt: 8, want: 15 * time.Minute},
+		{attempt: 9, want: 15 * time.Minute},
+		{attempt: 20, want: 15 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		require.Equal(t, tt.want, Backoff(tt.attempt), "attempt %d", tt.attempt)
+	}
 }
 
 // The fake honours the same contract as the real store: write-once, a
