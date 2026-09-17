@@ -2,7 +2,7 @@
 # flags only, no env, no mount. Destination flags render in name order.
 set:
   - resultsArchive.enabled=true
-  - resultsArchive.clusterId=voyager-7
+  - resultsArchive.clusterId=cluster-a
   - resultsArchive.default=prod
   - resultsArchive.destinations.prod=gs://nvcre-results-prod/runs
   - resultsArchive.destinations.dev=gs://nvcre-results-dev

@@ -2,4 +2,4 @@
 # not discovered as a controller that never archives.
 set:
   - resultsArchive.enabled=true
-  - resultsArchive.clusterId=voyager-7
+  - resultsArchive.clusterId=cluster-a

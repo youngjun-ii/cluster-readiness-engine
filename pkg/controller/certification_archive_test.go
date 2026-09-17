@@ -113,12 +113,12 @@ const (
 	preexistingDifferent = "different"
 )
 
-const testURI = "gs://nvcre-results/runs/v=1/cluster=voyager-7/date=2026-09-16/run=" + archiveTestCertUID + "/record.json"
+const testURI = "gs://nvcre-results/runs/v=1/cluster=cluster-a/date=2026-09-16/run=" + archiveTestCertUID + "/record.json"
 
 func prodConfig() archiveTestInput {
 	var in archiveTestInput
 	in.Config.Default = "prod"
-	in.Config.ClusterID = "voyager-7"
+	in.Config.ClusterID = "cluster-a"
 	in.Config.Destinations = map[string]string{"prod": "gs://nvcre-results/runs", "dev": "gs://nvcre-results-dev"}
 	in.Terminal = nvcrev1alpha1.CertificationSucceeded
 	in.TerminalAt = "2026-09-16T23:30:00Z"
@@ -175,7 +175,7 @@ func TestCertificationArchive(t *testing.T) {
 			in:   func() archiveTestInput { in := prodConfig(); in.TerminalAt = "2026-09-16T23:30:00-08:00"; return in },
 			want: archiveWant{states: []string{ArchiveStateSucceeded}, requeues: []string{"0s"}, stored: 1, creates: 1,
 				events: []string{"Normal/" + ReasonArchived},
-				uri:    "gs://nvcre-results/runs/v=1/cluster=voyager-7/date=2026-09-17/run=" + archiveTestCertUID + "/record.json"},
+				uri:    "gs://nvcre-results/runs/v=1/cluster=cluster-a/date=2026-09-17/run=" + archiveTestCertUID + "/record.json"},
 		},
 		{
 			// archive: "false" writes nothing and records Skipped.
@@ -351,7 +351,7 @@ func TestCertificationArchive(t *testing.T) {
 			}
 			if tc.want.stored > 0 && in.Preexisting != preexistingDifferent {
 				require.Equal(t, record.VerdictPassed, out.RecordVerdict)
-				require.Equal(t, "voyager-7", out.RecordClusterID)
+				require.Equal(t, "cluster-a", out.RecordClusterID)
 			}
 			_ = stores
 		})

@@ -30,7 +30,7 @@ Archiving is configured on the controller and selected per run. Destinations hav
 # values.yaml
 resultsArchive:
   enabled: true
-  clusterId: voyager-7            # required; part of every object key
+  clusterId: cluster-a            # required; part of every object key
   default: prod                   # runs that name no destination go here; leave empty for opt-in only
   destinations:
     dev:  gs://nvcre-results-dev/runs

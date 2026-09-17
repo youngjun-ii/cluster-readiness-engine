@@ -157,7 +157,7 @@ func (sc scenario) build(t *testing.T) *Record {
 
 	digest, k8s := "sha256:controller", "v1.36.4-test"
 	opts := Options{
-		ClusterID:         "voyager-7",
+		ClusterID:         "cluster-a",
 		IncludeFailureLog: sc.includeFailureLog,
 		Provenance: Provenance{
 			Controller:        ControllerProvenance{Version: "v-test", ImageDigest: &digest},
@@ -372,7 +372,7 @@ func TestBuildHappyPath(t *testing.T) {
 
 	require.Equal(t, SchemaVersion, rec.SchemaVersion)
 	require.Equal(t, scCertUID, rec.Run.ID)
-	require.Equal(t, "voyager-7", rec.Run.ClusterID)
+	require.Equal(t, "cluster-a", rec.Run.ClusterID)
 	require.Equal(t, scTerminal.Time, rec.Run.TerminalAt.Time)
 	require.Len(t, rec.Run.SpecSHA256, 64)
 	require.Equal(t, VerdictPassed, rec.Verdict.Status)
