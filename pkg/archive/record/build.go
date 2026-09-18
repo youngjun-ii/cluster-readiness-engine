@@ -4,518 +4,379 @@
 package record
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
-	"strings"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
-	"github.com/NVIDIA/cluster-readiness-engine/pkg/noderesults"
-	"github.com/NVIDIA/cluster-readiness-engine/pkg/threshold"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/evidence"
 )
 
-// Labels the Workflow controller stamps on the Jobs it creates, and the Job
-// controller on the pods. Duplicated here rather than imported from
-// pkg/controller to avoid the import cycle described in the package comment.
-const (
-	labelWorkflow                = "nvcre.nvidia.com/workflow"
-	labelJob                     = "nvcre.nvidia.com/job"
-	annotationRequestedTestScale = "nvcre.nvidia.com/requested-test-scale"
-)
+func Marshal(record *Record) ([]byte, error) {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(record); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
 
-// Options configures Build.
 type Options struct {
-	// ClusterID names the cluster in the record. It is controller
-	// configuration, not discovered, so no RBAC on namespaces is needed.
-	ClusterID string
-	// IncludeFailureLog copies the Job's failure log tail into the record.
-	// Off by default: the tail is up to 32 KiB of arbitrary workload output.
-	IncludeFailureLog bool
-	// Provenance is pre-filled by the controller with its version, image
-	// digest, catalog revision and the Kubernetes version. Build adds the
-	// workload images.
+	ClusterID  string
 	Provenance Provenance
-	// NodeIdentity is the snapshot captured when the target was first
-	// resolved. nil means no snapshot exists; Build then reads the live Node
-	// objects and records a gap, because a node may have been replaced since.
-	NodeIdentity []NodeIdentity
 }
 
-// builder carries state across the build of one record.
 type builder struct {
-	ctx      context.Context
-	c        client.Reader
-	cert     *nvcrev1alpha1.Certification
-	opts     Options
-	rec      *Record
-	identity map[string]NodeIdentity
-	// nodeReasons accumulates per-node, per-category verdicts from the
-	// final iteration for the run-level reduction.
-	nodeReasons map[string][]NodeReason
-	// targeted is every node name the run touched or excluded.
-	targeted map[string]bool
-	excluded map[string]bool
+	record        *Record
+	bundle        evidence.Bundle
+	identities    map[string]evidence.NodeIdentity
+	workflowNodes map[string]map[string]string
+	reasons       map[string][]NodeReason
+	targeted      map[string]bool
+	excluded      map[string]bool
 }
 
-// Build assembles the record for a terminal Certification from the objects
-// still in the cluster. It never fails on missing evidence: a Workflow, Job,
-// ConfigMap or Node that is gone becomes a gap. The only error is a spec that
-// cannot be marshalled, which cannot happen for an object the API server
-// accepted.
-func Build(ctx context.Context, c client.Reader, cert *nvcrev1alpha1.Certification, opts Options) (*Record, error) {
-	specJSON, err := json.Marshal(cert.Spec)
+func Build(ctx context.Context, reader client.Reader, cert *nvcrev1alpha1.Certification, opts Options) (*Record, error) {
+	spec, err := json.Marshal(cert.Spec)
 	if err != nil {
 		return nil, fmt.Errorf("marshal certification spec: %w", err)
 	}
-	sum := sha256.Sum256(specJSON)
-
-	b := &builder{
-		ctx:  ctx,
-		c:    c,
-		cert: cert,
-		opts: opts,
-		rec: &Record{
-			SchemaVersion: SchemaVersion,
-			Kind:          Kind,
-			Run: Run{
-				ID:                string(cert.UID),
-				ClusterID:         opts.ClusterID,
-				Namespace:         cert.Namespace,
-				Name:              cert.Name,
-				Generation:        cert.Generation,
-				CreatedAt:         cert.CreationTimestamp,
-				TerminalAt:        TerminalTime(cert),
-				CertificationSpec: specJSON,
-				SpecSHA256:        hex.EncodeToString(sum[:]),
-			},
-			Provenance: opts.Provenance,
-		},
-		identity:    map[string]NodeIdentity{},
-		nodeReasons: map[string][]NodeReason{},
-		targeted:    map[string]bool{},
-		excluded:    map[string]bool{},
+	bundle, err := evidence.Load(ctx, reader, cert.Namespace, cert.UID)
+	if err != nil {
+		return nil, fmt.Errorf("load archive evidence: %w", err)
 	}
-	for _, id := range opts.NodeIdentity {
-		b.identity[id.Name] = id
+	b := &builder{bundle: bundle, identities: map[string]evidence.NodeIdentity{}, workflowNodes: map[string]map[string]string{}, reasons: map[string][]NodeReason{}, targeted: map[string]bool{}, excluded: map[string]bool{},
+		record: &Record{SchemaVersion: SchemaVersion, Kind: Kind, Run: Run{ID: string(cert.UID), ClusterID: opts.ClusterID, Namespace: cert.Namespace, Name: cert.Name,
+			Generation: cert.Generation, CreatedAt: cert.CreationTimestamp, TerminalAt: TerminalTime(cert), CertificationSpec: spec}, Provenance: opts.Provenance}}
+	b.verdict(cert)
+	for _, name := range bundle.Corrupt {
+		b.gap("evidence/"+name, GapEvidenceCorrupt, "evidence ConfigMap could not be decoded", "categories[].iterations")
 	}
-
-	b.buildVerdictHeader()
+	for _, discovery := range bundle.Discoveries {
+		workflowUID := string(discovery.Workflow.UID)
+		if b.workflowNodes[workflowUID] == nil {
+			b.workflowNodes[workflowUID] = map[string]string{}
+		}
+		for _, id := range discovery.Nodes {
+			stableID := nodeID(id)
+			b.identities[stableID] = id
+			b.workflowNodes[workflowUID][id.Name] = stableID
+		}
+	}
 	for i := range cert.Status.CategoryStatuses {
-		b.buildCategory(&cert.Status.CategoryStatuses[i])
+		b.category(ctx, reader, cert, &cert.Status.CategoryStatuses[i])
 	}
-	b.buildNodes()
-	b.buildCoverage()
+	b.nodes()
+	b.coverage()
 	b.finish()
-	return b.rec, nil
+	return b.record, nil
 }
 
-// TerminalTime is the transition time of the Certification's terminal
-// condition, or nil when it is not terminal. The object key's date segment is
-// derived from it rather than from wall clock so every retry computes the
-// same key.
 func TerminalTime(cert *nvcrev1alpha1.Certification) *metav1.Time {
-	for _, t := range []string{nvcrev1alpha1.CertificationSucceeded, nvcrev1alpha1.CertificationFailed} {
-		if cond := meta.FindStatusCondition(cert.Status.Conditions, t); cond != nil && cond.Status == metav1.ConditionTrue {
-			if cond.LastTransitionTime.IsZero() {
+	for _, typ := range []string{nvcrev1alpha1.CertificationSucceeded, nvcrev1alpha1.CertificationFailed} {
+		if c := meta.FindStatusCondition(cert.Status.Conditions, typ); c != nil && c.Status == metav1.ConditionTrue {
+			if c.LastTransitionTime.IsZero() {
 				return nil
 			}
-			lt := cond.LastTransitionTime
-			return &lt
+			t := c.LastTransitionTime
+			return &t
 		}
 	}
 	return nil
 }
 
-func (b *builder) buildVerdictHeader() {
-	v := &b.rec.Verdict
-	v.ReductionPolicy = ReductionPolicy
-	v.Status = VerdictUnknown
-	if cond := meta.FindStatusCondition(b.cert.Status.Conditions, nvcrev1alpha1.CertificationFailed); cond != nil && cond.Status == metav1.ConditionTrue {
-		v.Status, v.Reason, v.Message = VerdictFailed, cond.Reason, cond.Message
+func (b *builder) verdict(cert *nvcrev1alpha1.Certification) {
+	b.record.Verdict.Status = VerdictUnknown
+	if c := meta.FindStatusCondition(cert.Status.Conditions, nvcrev1alpha1.CertificationFailed); c != nil && c.Status == metav1.ConditionTrue {
+		b.record.Verdict.Status, b.record.Verdict.Reason, b.record.Verdict.Message = VerdictFailed, c.Reason, c.Message
 		return
 	}
-	if cond := meta.FindStatusCondition(b.cert.Status.Conditions, nvcrev1alpha1.CertificationSucceeded); cond != nil && cond.Status == metav1.ConditionTrue {
-		v.Status, v.Reason, v.Message = VerdictPassed, cond.Reason, cond.Message
+	if c := meta.FindStatusCondition(cert.Status.Conditions, nvcrev1alpha1.CertificationSucceeded); c != nil && c.Status == metav1.ConditionTrue {
+		b.record.Verdict.Status, b.record.Verdict.Reason, b.record.Verdict.Message = VerdictPassed, c.Reason, c.Message
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Categories
-// ---------------------------------------------------------------------------
-
-// categoryContext is everything one Workflow's attempts read from.
-type categoryContext struct {
-	cat         *Category
-	wf          *nvcrev1alpha1.Workflow
-	scope       string
-	jobs        map[string]*nvcrev1alpha1.Job
-	goodputs    map[string][]nvcrev1alpha1.GoodputMeasurement
-	bandwidths  map[string][]nvcrev1alpha1.BandwidthMeasurement
-	failedNodes []nvcrev1alpha1.FailedNode
-}
-
-func (b *builder) buildCategory(cs *nvcrev1alpha1.CertificationCategoryStatus) {
-	cat := Category{
-		Domain:  cs.Domain,
-		Variant: cs.Variant,
-		Status:  cs.Status,
-	}
-	scope := "categories/" + cs.Domain + "/" + cs.Variant
-	defer func() { b.rec.Categories = append(b.rec.Categories, cat) }()
-
-	if cs.WorkflowRef == nil {
-		b.gap(scope, GapCategoryNeverStarted, "no Workflow was created for this category", "categories[].iterations")
+func (b *builder) category(ctx context.Context, reader client.Reader, cert *nvcrev1alpha1.Certification, status *nvcrev1alpha1.CertificationCategoryStatus) {
+	cat := Category{Domain: status.Domain, Variant: status.Variant, Status: status.Status}
+	scope := "categories/" + status.Domain + "/" + status.Variant
+	defer func() { b.record.Categories = append(b.record.Categories, cat) }()
+	if status.WorkflowRef == nil {
+		b.gap(scope, GapCategoryNeverStarted, "no Workflow was created", "categories[].iterations")
 		return
 	}
-	cat.Workflow = cs.WorkflowRef.Name
-	ns := cs.WorkflowRef.Namespace
+	ns := status.WorkflowRef.Namespace
 	if ns == "" {
-		ns = b.cert.Namespace
+		ns = cert.Namespace
 	}
-	wf := &nvcrev1alpha1.Workflow{}
-	if err := b.c.Get(b.ctx, client.ObjectKey{Namespace: ns, Name: cs.WorkflowRef.Name}, wf); err != nil {
-		b.gap(scope, GapWorkflowMissing, "Workflow "+cs.WorkflowRef.Name+" could not be read: "+err.Error(),
-			"categories[].iterations", "categories[].detectedPlatform", "nodes[].outcome")
+	var wf nvcrev1alpha1.Workflow
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: status.WorkflowRef.Name}, &wf); err != nil {
+		b.gap(scope, GapWorkflowMissing, err.Error(), "categories[].iterations")
 		return
 	}
-
-	cc := &categoryContext{cat: &cat, wf: wf, scope: scope}
-	b.describeWorkflow(cc)
-	b.loadWorkflowChildren(cc)
-	b.buildIterations(cc)
-	b.recordExclusions(cc)
-	b.recordWorkloadImage(cc)
-}
-
-func (b *builder) describeWorkflow(cc *categoryContext) {
-	cat, wf := cc.cat, cc.wf
-	if cond := meta.FindStatusCondition(wf.Status.Conditions, nvcrev1alpha1.WorkflowFailed); cond != nil && cond.Status == metav1.ConditionTrue {
-		cat.FailureReason = cond.Message
+	cat.Workflow = wf.Name
+	if c := meta.FindStatusCondition(wf.Status.Conditions, nvcrev1alpha1.WorkflowFailed); c != nil && c.Status == metav1.ConditionTrue {
+		cat.FailureReason = c.Message
 	}
 	cat.ValidationFailed = meta.IsStatusConditionTrue(wf.Status.Conditions, nvcrev1alpha1.WorkflowValidationFailed)
-	cat.TestScale = detectTestScale(wf)
+	cat.TestScale = detectTestScale(&wf)
+	cat.Thresholds = wf.Spec.JobTemplate.Spec.Thresholds
 	if v := wf.Spec.Validation; v != nil && v.Performance != nil && v.Performance.Thresholds != nil {
 		cat.Thresholds = v.Performance.Thresholds.Thresholds
 	}
-	orch := wf.Status.Orchestration
-	if orch == nil {
-		return
-	}
-	cat.DetectedPlatform = orch.DetectedPlatform
-	cat.DetectedGPUArchitecture = orch.DetectedGPUArchitecture
-	cat.NodesPerJob = orch.NodesPerJob
-	cat.TotalNodes = orch.TotalNodes
-	cat.TotalGroups = orch.TotalGroups
-	cat.AppliedOverrides = orch.AppliedOverrides
-	if d := orch.Diagnose; d != nil {
-		cat.Diagnose = &Diagnose{
-			Stage:                d.Stage,
-			Rounds:               d.Round,
-			HealthyNodes:         d.HealthyNodes,
-			SuspectNodes:         d.SuspectNodes,
-			NoNVLSuspectNodes:    d.NoNVLSuspectNodes,
-			InfrastructureFaults: d.InfrastructureFaults,
-			ScreeningResults:     d.ScreeningResults,
+	if orch := wf.Status.Orchestration; orch != nil {
+		cat.DetectedPlatform, cat.DetectedGPUArchitecture = orch.DetectedPlatform, orch.DetectedGPUArchitecture
+		cat.NodesPerJob, cat.TotalNodes, cat.TotalGroups, cat.AppliedOverrides = orch.NodesPerJob, orch.TotalNodes, orch.TotalGroups, orch.AppliedOverrides
+		if d := orch.Diagnose; d != nil {
+			cat.Diagnose = &Diagnose{Stage: d.Stage, Rounds: d.Round, HealthyNodes: d.HealthyNodes, SuspectNodes: d.SuspectNodes, NoNVLSuspectNodes: d.NoNVLSuspectNodes, InfrastructureFaults: d.InfrastructureFaults, ScreeningResults: d.ScreeningResults}
 		}
+	}
+	var discovery *evidence.Discovery
+	for i := range b.bundle.Discoveries {
+		if b.bundle.Discoveries[i].Workflow.UID == wf.UID {
+			discovery = &b.bundle.Discoveries[i]
+			break
+		}
+	}
+	if discovery == nil {
+		b.gap(scope, GapEvidenceMissing, "Workflow discovery evidence is missing", "nodes", "exclusions")
+	} else {
+		for _, x := range discovery.Exclusions {
+			id := b.identity(wf.UID, x.Node)
+			b.targeted[id], b.excluded[id] = true, true
+			b.record.Exclusions = append(b.record.Exclusions, Exclusion{NodeID: id, HostnameAlias: x.Node, Category: cat.Domain + "/" + cat.Variant, ReasonCode: x.ReasonCode, Message: x.Message})
+		}
+	}
+	var attempts []evidence.Attempt
+	for _, item := range b.bundle.Attempts {
+		if item.Workflow.UID == wf.UID {
+			attempts = append(attempts, item)
+		}
+	}
+	if len(attempts) == 0 && wf.Status.Orchestration != nil && len(wf.Status.Orchestration.Groups) > 0 {
+		b.gap(scope, GapEvidenceMissing, "Workflow attempt evidence is missing", "categories[].iterations[].groups[].attempts")
+	}
+	b.iterations(&cat, scope, &wf, attempts)
+	if wf.Status.Orchestration != nil && wf.Status.Orchestration.Diagnose != nil {
+		b.reduceDiagnose(&cat, &wf, attempts)
+	}
+	if trainJob := wf.Spec.JobTemplate.Spec.Workload.TrainJob; trainJob != nil && trainJob.Trainer != nil && trainJob.Trainer.Image != nil && *trainJob.Trainer.Image != "" {
+		image := WorkloadImage{Category: cat.Domain + "/" + cat.Variant, Requested: *trainJob.Trainer.Image}
+		for _, item := range attempts {
+			if item.ResolvedImageDigest != nil {
+				image.ResolvedDigest = item.ResolvedImageDigest
+				break
+			}
+		}
+		b.record.Provenance.WorkloadImages = append(b.record.Provenance.WorkloadImages, image)
 	}
 }
 
-// loadWorkflowChildren reads the Jobs, measurements and failed-nodes record
-// for one Workflow. Each read that fails becomes a gap rather than an error,
-// because the record is more useful with a named hole than not at all.
-func (b *builder) loadWorkflowChildren(cc *categoryContext) {
-	wf := cc.wf
-	cc.jobs = map[string]*nvcrev1alpha1.Job{}
-	var jobs nvcrev1alpha1.JobList
-	if err := b.c.List(b.ctx, &jobs, client.InNamespace(wf.Namespace), client.MatchingLabels{labelWorkflow: wf.Name}); err != nil {
-		b.gap(cc.scope, GapJobsUnlisted, "Jobs could not be listed: "+err.Error(),
-			"categories[].iterations[].groups[].attempts[].jobOutcome")
-	} else {
-		for i := range jobs.Items {
-			cc.jobs[jobs.Items[i].Name] = &jobs.Items[i]
+func (b *builder) iterations(cat *Category, scope string, wf *nvcrev1alpha1.Workflow, attempts []evidence.Attempt) {
+	type key struct {
+		iteration int
+		group     string
+	}
+	groups := map[key][]evidence.Attempt{}
+	maxIteration := 0
+	for _, item := range attempts {
+		index := item.Iteration
+		if item.DiagnoseRound > 0 {
+			index = item.DiagnoseRound
 		}
+		groups[key{index, item.Group.Name}] = append(groups[key{index, item.Group.Name}], item)
+		maxIteration = max(maxIteration, index)
 	}
-
-	cc.goodputs = map[string][]nvcrev1alpha1.GoodputMeasurement{}
-	var gms nvcrev1alpha1.GoodputMeasurementList
-	if err := b.c.List(b.ctx, &gms, client.InNamespace(wf.Namespace)); err != nil {
-		b.gap(cc.scope, GapMeasurementsUnlisted, "GoodputMeasurements could not be listed: "+err.Error(),
-			"categories[].iterations[].groups[].attempts[].measurements")
-	} else {
-		for _, gm := range gms.Items {
-			cc.goodputs[gm.Spec.JobRef.Name] = append(cc.goodputs[gm.Spec.JobRef.Name], gm)
-		}
+	byIteration := map[int][]key{}
+	for k := range groups {
+		byIteration[k.iteration] = append(byIteration[k.iteration], k)
 	}
-	cc.bandwidths = map[string][]nvcrev1alpha1.BandwidthMeasurement{}
-	var bms nvcrev1alpha1.BandwidthMeasurementList
-	if err := b.c.List(b.ctx, &bms, client.InNamespace(wf.Namespace)); err != nil {
-		b.gap(cc.scope, GapMeasurementsUnlisted, "BandwidthMeasurements could not be listed: "+err.Error(),
-			"categories[].iterations[].groups[].attempts[].measurements")
-	} else {
-		for _, bm := range bms.Items {
-			cc.bandwidths[bm.Spec.JobRef.Name] = append(cc.bandwidths[bm.Spec.JobRef.Name], bm)
-		}
+	indexes := make([]int, 0, len(byIteration))
+	for index := range byIteration {
+		indexes = append(indexes, index)
 	}
-
-	if ref := wf.Status.FailedNodesRef; ref != nil && ref.Name != "" {
-		cm := &corev1.ConfigMap{}
-		if err := b.c.Get(b.ctx, client.ObjectKey{Namespace: wf.Namespace, Name: ref.Name}, cm); err != nil {
-			b.gap(cc.scope, GapFailedNodesUnreadable, "failed-nodes ConfigMap "+ref.Name+" could not be read: "+err.Error(),
-				"categories[].iterations[].groups[].attempts[].nodeVerdicts[].reason")
-		} else if nodes, err := noderesults.DecodeFailedNodesFromConfigMap(cm); err != nil {
-			b.gap(cc.scope, GapFailedNodesUnreadable, "failed-nodes ConfigMap "+ref.Name+" could not be decoded: "+err.Error(),
-				"categories[].iterations[].groups[].attempts[].nodeVerdicts[].reason")
-		} else {
-			cc.failedNodes = nodes
-		}
-	}
-}
-
-func (b *builder) buildIterations(cc *categoryContext) {
-	orch := cc.wf.Status.Orchestration
-	if orch == nil {
-		return
-	}
-	// Group membership is stable across iterations; the history only keeps
-	// the phase and timings, so nodes are looked up by group name.
-	groupNodes := map[string]nvcrev1alpha1.GroupStatus{}
-	for _, g := range orch.Groups {
-		groupNodes[g.Name] = g
-	}
-
-	for _, hist := range orch.IterationHistory {
-		iterScope := fmt.Sprintf("%s/iterations/%d", cc.scope, hist.Iteration)
-		it := Iteration{Index: hist.Iteration}
-		for _, gr := range hist.Groups {
-			gs := groupNodes[gr.Name]
-			g := Group{
-				Name:    gr.Name,
-				Nodes:   sortedCopy(gs.Nodes),
-				Domains: gs.Domains,
-				Phase:   string(gr.Phase),
-			}
-			job := cc.jobs[gr.JobName]
-			att := b.buildAttempt(cc, hist.Iteration, g, 0, gr.JobName, job, gr.StartTime, gr.CompletionTime, false)
-			g.Attempts = []Attempt{att}
-			it.Groups = append(it.Groups, g)
-		}
-		cat := cc.cat
-		cat.Iterations = append(cat.Iterations, it)
-		b.gap(iterScope, GapIterationEvidenceMissing,
-			"the Jobs of this iteration were deleted when the next iteration started; only group phases and timings survive",
-			"categories[].iterations[].groups[].attempts[].jobOutcome",
-			"categories[].iterations[].groups[].attempts[].measurements",
-			"categories[].iterations[].groups[].attempts[].nodeVerdicts[].reason")
-	}
-
-	finalIndex := orch.CurrentIteration
-	if finalIndex == 0 {
-		finalIndex = max(orch.CompletedIterations, 1)
-	}
-	final := Iteration{Index: finalIndex, Final: true}
-	for _, gs := range orch.Groups {
-		g := Group{
-			Name:     gs.Name,
-			Nodes:    sortedCopy(gs.Nodes),
-			Domains:  gs.Domains,
-			Overflow: gs.Overflow,
-			Phase:    string(gs.Phase),
-			Retries:  gs.Retries,
-		}
-		jobName := ""
-		if gs.JobRef != nil {
-			jobName = gs.JobRef.Name
-		}
-		job := cc.jobs[jobName]
-		att := b.buildAttempt(cc, finalIndex, g, gs.Retries, jobName, job, gs.StartTime, gs.CompletionTime, true)
-		g.Attempts = []Attempt{att}
-		if gs.Retries > 0 {
-			missing := make([]int, 0, gs.Retries)
-			for i := range gs.Retries {
-				missing = append(missing, i)
-			}
-			b.rec.Completeness.Gaps = append(b.rec.Completeness.Gaps, Gap{
-				Scope: fmt.Sprintf("%s/iterations/%d/groups/%s", cc.scope, finalIndex, gs.Name),
-				Code:  GapRetriedAttemptsMissing,
-				Message: fmt.Sprintf("group was retried %d time(s); the earlier attempts' Jobs were deleted and only the final attempt is recorded",
-					gs.Retries),
-				MissingAttemptIndexes: missing,
-				AffectedFields:        []string{"categories[].iterations[].groups[].attempts"},
+	sort.Ints(indexes)
+	category := cat.Domain + "/" + cat.Variant
+	for _, index := range indexes {
+		iteration := Iteration{Index: index, Final: index == maxIteration}
+		keys := byIteration[index]
+		sort.Slice(keys, func(i, j int) bool { return keys[i].group < keys[j].group })
+		for _, k := range keys {
+			items := groups[k]
+			sort.Slice(items, func(i, j int) bool {
+				if items[i].Retry == items[j].Retry {
+					return items[i].Job.Name < items[j].Job.Name
+				}
+				return items[i].Retry < items[j].Retry
 			})
-		}
-		final.Groups = append(final.Groups, g)
-	}
-	cc.cat.Iterations = append(cc.cat.Iterations, final)
-
-	if orch.Diagnose != nil {
-		b.gap(cc.scope, GapDiagnoseMultiRound,
-			"diagnose runs several rounds and only the final round's groups survive on the Workflow; node outcomes come from the accumulated diagnose status, not from the attempts",
-			"categories[].iterations[].groups", "categories[].iterations[].groups[].attempts[].nodeVerdicts")
-		b.reduceDiagnoseVerdicts(cc)
-	}
-}
-
-// buildAttempt records one Job run for a group. final says whether the
-// attempt belongs to the final iteration and therefore feeds the run-level
-// node reduction.
-func (b *builder) buildAttempt(
-	cc *categoryContext, iteration int, g Group, index int, jobName string, job *nvcrev1alpha1.Job,
-	start, completion *metav1.Time, final bool,
-) Attempt {
-	category := cc.cat.Domain + "/" + cc.cat.Variant
-	att := Attempt{
-		ID:             fmt.Sprintf("%s/%d/%s/%d", category, iteration, g.Name, index),
-		Index:          index,
-		JobName:        jobName,
-		JobFound:       job != nil,
-		StartTime:      start,
-		CompletionTime: completion,
-		GroupOutcome:   groupOutcome(nvcrev1alpha1.GroupPhase(g.Phase)),
-		JobOutcome:     OutcomeUnknown,
-	}
-	scope := fmt.Sprintf("%s/iterations/%d/groups/%s/attempts/%d", cc.scope, iteration, g.Name, index)
-
-	if job != nil {
-		b.describeJob(cc, &att, job)
-	} else if jobName != "" && final {
-		// Earlier iterations' Jobs are deleted by design and already covered
-		// by the iteration-level gap; a missing Job in the final iteration is
-		// the surprising case worth naming per attempt.
-		b.gap(scope, GapJobDeleted, "Job "+jobName+" no longer exists; outcome, measurements and evidence are unavailable",
-			"categories[].iterations[].groups[].attempts[].jobOutcome",
-			"categories[].iterations[].groups[].attempts[].measurements",
-			"categories[].iterations[].groups[].attempts[].failureEvidence")
-	}
-
-	for _, ms := range cc.goodputs[jobName] {
-		att.Measurements = append(att.Measurements, goodputMeasurement(&ms))
-	}
-	for _, ms := range cc.bandwidths[jobName] {
-		att.Measurements = append(att.Measurements, bandwidthMeasurement(&ms))
-	}
-	sort.Slice(att.Measurements, func(i, j int) bool {
-		if att.Measurements[i].Kind != att.Measurements[j].Kind {
-			return att.Measurements[i].Kind < att.Measurements[j].Kind
-		}
-		return att.Measurements[i].Name < att.Measurements[j].Name
-	})
-	if job != nil {
-		att.ThresholdEvaluations = evaluateThresholds(job.Spec.Thresholds, att.Measurements)
-	}
-
-	att.NodeVerdicts = b.nodeVerdicts(cc, scope, g, job, att.JobOutcomeReason)
-	if final && cc.wf.Status.Orchestration.Diagnose == nil {
-		for _, nv := range att.NodeVerdicts {
-			b.noteNodeVerdict(nv.HostnameAlias, category, nv)
-		}
-	}
-	for _, n := range g.Nodes {
-		b.targeted[n] = true
-	}
-	return att
-}
-
-func (b *builder) describeJob(cc *categoryContext, att *Attempt, job *nvcrev1alpha1.Job) {
-	att.WorkloadStartTime = job.Status.WorkloadStartTime
-	att.RestartCount = job.Status.RestartCount
-
-	succeeded := meta.FindStatusCondition(job.Status.Conditions, nvcrev1alpha1.JobSucceeded)
-	failed := meta.FindStatusCondition(job.Status.Conditions, nvcrev1alpha1.JobFailed)
-	hw := meta.FindStatusCondition(job.Status.Conditions, nvcrev1alpha1.JobHardwareFailed)
-	switch {
-	case failed != nil && failed.Status == metav1.ConditionTrue:
-		att.JobOutcome, att.JobOutcomeReason, att.JobOutcomeMessage = OutcomeFailed, failed.Reason, failed.Message
-	case succeeded != nil && succeeded.Status == metav1.ConditionTrue:
-		att.JobOutcome, att.JobOutcomeReason, att.JobOutcomeMessage = OutcomeSucceeded, succeeded.Reason, succeeded.Message
-	case hw != nil && hw.Status == metav1.ConditionTrue:
-		att.JobOutcome, att.JobOutcomeReason, att.JobOutcomeMessage = OutcomeHardwareFailed, hw.Reason, hw.Message
-	}
-	if vf := meta.FindStatusCondition(job.Status.Conditions, nvcrev1alpha1.JobValidationFailed); vf != nil {
-		v := vf.Status == metav1.ConditionTrue
-		att.ValidationFailed = &v
-	}
-	if fl := job.Status.FailureLog; fl != nil {
-		att.FailureEvidence = &FailureEvidence{
-			PodName:         fl.PodName,
-			NodeName:        fl.NodeName,
-			ExitCode:        fl.ExitCode,
-			Reason:          fl.Reason,
-			LogTailIncluded: b.opts.IncludeFailureLog,
-			LogTailBytes:    len(fl.Tail),
-		}
-		if b.opts.IncludeFailureLog {
-			att.FailureEvidence.LogTail = fl.Tail
-		}
-	}
-	_ = cc
-}
-
-// nodeVerdicts implements Rule 1: the verdict comes from the group phase, the
-// reason from the failed-nodes record, and a missing reason falls back to the
-// Job's terminal condition rather than to "passed".
-func (b *builder) nodeVerdicts(cc *categoryContext, scope string, g Group, job *nvcrev1alpha1.Job, jobReason string) []NodeVerdict {
-	verdicts := make([]NodeVerdict, 0, len(g.Nodes))
-	unknownReason := false
-	for _, name := range g.Nodes {
-		id, _ := b.identityFor(name)
-		nv := NodeVerdict{NodeID: id, HostnameAlias: name}
-		switch nvcrev1alpha1.GroupPhase(g.Phase) {
-		case nvcrev1alpha1.GroupSucceeded:
-			nv.Verdict, nv.Attribution = NodePassed, AttributionGroup
-		case nvcrev1alpha1.GroupFailed:
-			nv.Verdict = NodeFailed
-			if fn, ok := primaryFailedNode(cc.failedNodes, name); ok {
-				nv.Reason, nv.Message = string(fn.Reason), fn.Message
-				nv.Attribution = attributionFor(fn.Reason)
-			} else {
-				nv.Attribution = AttributionGroup
-				switch {
-				case job != nil && jobReason != "":
-					nv.Reason = jobReason
-					nv.Message = "no failed-nodes entry; reason taken from the Job's terminal condition"
-				case job != nil && meta.IsStatusConditionTrue(job.Status.Conditions, nvcrev1alpha1.JobValidationFailed):
-					nv.Reason = string(nvcrev1alpha1.NodeFailureThresholdViolation)
-					nv.Message = "no failed-nodes entry; the Job's ValidationFailed condition is True"
-				default:
-					nv.Reason = "Unknown"
-					nv.Message = "group failed but no failed-nodes entry exists and the Job is gone"
-					unknownReason = true
+			last := items[len(items)-1]
+			group := Group{Name: last.Group.Name, Nodes: sortedCopy(last.Group.Nodes), Domains: last.Group.Domains, Overflow: last.Group.Overflow, Retries: last.Retry, Phase: string(nvcrev1alpha1.GroupFailed)}
+			if passed(last) {
+				group.Phase = string(nvcrev1alpha1.GroupSucceeded)
+			}
+			for _, item := range items {
+				phase := group.Phase
+				if !passed(item) {
+					phase = string(nvcrev1alpha1.GroupFailed)
+				}
+				attempt := b.attempt(scope, wf.UID, phase, item)
+				group.Attempts = append(group.Attempts, attempt)
+				if iteration.Final && item.Retry == last.Retry && (wf.Status.Orchestration == nil || wf.Status.Orchestration.Diagnose == nil) {
+					for _, v := range attempt.NodeVerdicts {
+						b.reasons[v.NodeID] = append(b.reasons[v.NodeID], NodeReason{Category: category, Verdict: v.Verdict, Reason: v.Reason, Message: v.Message, Attribution: v.Attribution})
+					}
 				}
 			}
-		default:
-			nv.Verdict, nv.Reason = NodeInconclusive, "NotRun"
-			nv.Message = "group phase was " + g.Phase + " when the run ended"
+			for _, name := range group.Nodes {
+				b.targeted[b.identity(wf.UID, name)] = true
+			}
+			iteration.Groups = append(iteration.Groups, group)
 		}
-		verdicts = append(verdicts, nv)
+		cat.Iterations = append(cat.Iterations, iteration)
 	}
-	if unknownReason {
-		b.gap(scope, GapNodeVerdictReasonUnknown,
-			"the group failed but neither the failed-nodes record nor the Job carries a reason",
-			"categories[].iterations[].groups[].attempts[].nodeVerdicts[].reason")
-	}
-	if nvcrev1alpha1.GroupPhase(g.Phase) != nvcrev1alpha1.GroupSucceeded && nvcrev1alpha1.GroupPhase(g.Phase) != nvcrev1alpha1.GroupFailed {
-		b.gap(scope, GapGroupNotRunAtTerminal, "group never reached a terminal phase",
-			"categories[].iterations[].groups[].attempts[].nodeVerdicts")
-	}
-	return verdicts
 }
 
-// primaryFailedNode picks the most node-specific entry for a node: a hardware
-// health check is evidence about that node, a threshold or workload failure
-// is evidence about its group.
-func primaryFailedNode(entries []nvcrev1alpha1.FailedNode, name string) (nvcrev1alpha1.FailedNode, bool) {
-	rank := func(r nvcrev1alpha1.NodeFailureReason) int {
-		switch r {
+// reduceDiagnose derives the run-level result from the accumulated diagnose
+// state. Attempt verdicts remain a literal account of each Job; this reduction
+// prevents the last bisection group from standing in for the whole run.
+func (b *builder) reduceDiagnose(cat *Category, wf *nvcrev1alpha1.Workflow, attempts []evidence.Attempt) {
+	d := wf.Status.Orchestration.Diagnose
+	category := cat.Domain + "/" + cat.Variant
+	seen := map[string]bool{}
+	note := func(name, verdict, reason, message, attribution string) {
+		id := b.identity(wf.UID, name)
+		b.targeted[id] = true
+		b.reasons[id] = append(b.reasons[id], NodeReason{Category: category, Verdict: verdict, Reason: reason, Message: message, Attribution: attribution})
+		seen[name] = true
+	}
+
+	for _, name := range d.HealthyNodes {
+		if !seen[name] {
+			note(name, NodePassed, "", "", AttributionGroup)
+		}
+	}
+
+	failedByName := map[string][]nvcrev1alpha1.FailedNode{}
+	for _, attempt := range attempts {
+		for _, failed := range attempt.FailedNodes {
+			if failed.Name != "" {
+				failedByName[failed.Name] = append(failedByName[failed.Name], failed)
+			}
+		}
+	}
+	failedNames := make([]string, 0, len(failedByName))
+	for name := range failedByName {
+		failedNames = append(failedNames, name)
+	}
+	sort.Strings(failedNames)
+	for _, name := range failedNames {
+		if seen[name] {
+			continue
+		}
+		failed, _ := primaryFailedNode(failedByName[name], name)
+		note(name, NodeFailed, string(failed.Reason), failed.Message, attributionFor(failed.Reason))
+	}
+
+	remaining := append([]string(nil), d.SuspectNodes...)
+	remaining = append(remaining, d.NoNVLSuspectNodes...)
+	for _, result := range d.ScreeningResults {
+		remaining = append(remaining, result.Nodes...)
+	}
+	for _, result := range d.NoNVLScreeningResults {
+		remaining = append(remaining, result.Nodes...)
+	}
+	for _, attempt := range attempts {
+		remaining = append(remaining, attempt.Group.Nodes...)
+	}
+	for _, name := range remaining {
+		if !seen[name] {
+			note(name, NodeInconclusive, "DiagnoseUnresolved", "diagnose ended without confirming this node healthy or faulty", "")
+		}
+	}
+}
+
+func detectTestScale(wf *nvcrev1alpha1.Workflow) string {
+	if requested := wf.GetAnnotations()["nvcre.nvidia.com/requested-test-scale"]; requested != "" {
+		return requested
+	}
+	if wf.Spec.Orchestration.Topology != nil && wf.Spec.Orchestration.Topology.StrictDomain {
+		return nvcrev1alpha1.TestScaleIntraRack
+	}
+	if wf.Spec.Orchestration.Diagnose != nil {
+		return nvcrev1alpha1.TestScaleDiagnose
+	}
+	if wf.Status.Orchestration != nil && wf.Status.Orchestration.NodesPerJob == 1 {
+		return nvcrev1alpha1.TestScaleIntraNode
+	}
+	return nvcrev1alpha1.TestScaleFullScale
+}
+
+func passed(item evidence.Attempt) bool {
+	return item.Outcome == OutcomeSucceeded && (item.Threshold == nil || !item.Threshold.Failed)
+}
+
+func (b *builder) attempt(scope string, workflowUID types.UID, phase string, item evidence.Attempt) Attempt {
+	a := Attempt{Index: item.Retry, JobName: item.Job.Name, StartTime: item.StartTime, CompletionTime: item.CompletionTime, WorkloadStartTime: item.WorkloadStartTime, RestartCount: item.RestartCount, JobOutcome: item.Outcome, JobOutcomeReason: item.Reason, JobOutcomeMessage: item.Message}
+	if item.Threshold != nil {
+		failed := item.Threshold.Failed
+		a.ValidationFailed = &failed
+		for _, e := range item.Threshold.Evaluations {
+			a.ThresholdEvaluations = append(a.ThresholdEvaluations, ThresholdEvaluation{Metric: e.Metric, MeasuredValue: e.MeasuredValue, Passed: e.Passed, Reason: e.Reason})
+		}
+	}
+	for _, e := range item.Measurements {
+		m := Measurement{Kind: e.Kind, Name: e.Name, LogProfile: e.LogProfile, Frozen: e.Complete, StartTime: e.StartTime, CompletionTime: e.CompletionTime}
+		if e.Bandwidth != nil {
+			m.Bandwidth = &BandwidthData{TestType: e.TestType, Results: e.Bandwidth.Results}
+		}
+		if e.Goodput != nil {
+			s := e.Goodput
+			m.Goodput = &GoodputData{Result: s.Result, AvgTFLOPSPerGPU: s.AvgTFLOPSPerGPU, AvgStepTimeSec: s.AvgStepTimeSec, TrainingTimeSec: s.TrainingTimeSec, LostWorkTimeSec: s.LostWorkTimeSec, RescheduleTimeSec: s.RescheduleTimeSec, ResumeTimeSec: s.ResumeTimeSec, CheckpointSaveTimeSec: s.CheckpointSaveTimeSec, WarmupTimeSec: s.WarmupTimeSec, NonWarmupTimeSec: s.NonWarmupTimeSec, InterruptionCount: s.InterruptionCount, HighestStep: s.HighestStep}
+		}
+		a.Measurements = append(a.Measurements, m)
+	}
+	if item.Failure != nil {
+		f := item.Failure
+		a.FailureEvidence = &FailureEvidence{PodName: f.PodName, NodeName: f.NodeName, ExitCode: f.ExitCode, Reason: f.Reason, LogTailIncluded: f.LogTailIncluded, LogTailBytes: f.LogTailBytes, LogTail: f.LogTail}
+	}
+	for _, name := range item.Group.Nodes {
+		verdict := NodeVerdict{NodeID: b.identity(workflowUID, name), HostnameAlias: name, Attribution: AttributionGroup}
+		if phase == string(nvcrev1alpha1.GroupSucceeded) {
+			verdict.Verdict = NodePassed
+		} else {
+			verdict.Verdict = NodeFailed
+			if failed, ok := primaryFailedNode(item.FailedNodes, name); ok {
+				verdict.Reason, verdict.Message = string(failed.Reason), failed.Message
+				verdict.Attribution = attributionFor(failed.Reason)
+			} else {
+				verdict.Reason = item.Reason
+			}
+		}
+		a.NodeVerdicts = append(a.NodeVerdicts, verdict)
+	}
+	for _, gap := range item.Gaps {
+		switch gap {
+		case "threshold-decision-corrupt":
+			b.gap(scope+"/jobs/"+item.Job.Name, GapEvidenceCorrupt, gap, "categories[].iterations[].groups[].attempts[].validationFailed", "categories[].iterations[].groups[].attempts[].thresholdEvaluations")
+		case "threshold-decision-missing":
+			b.gap(scope+"/jobs/"+item.Job.Name, GapEvidenceMissing, gap, "categories[].iterations[].groups[].attempts[].validationFailed", "categories[].iterations[].groups[].attempts[].thresholdEvaluations")
+		default:
+			b.gap(scope+"/jobs/"+item.Job.Name, GapMeasurementIncomplete, gap, "categories[].iterations[].groups[].attempts[].measurements")
+		}
+	}
+	return a
+}
+
+func primaryFailedNode(items []nvcrev1alpha1.FailedNode, name string) (nvcrev1alpha1.FailedNode, bool) {
+	rank := func(reason nvcrev1alpha1.NodeFailureReason) int {
+		switch reason {
 		case nvcrev1alpha1.NodeFailureHardwareDetected:
 			return 0
 		case nvcrev1alpha1.NodeFailureThresholdViolation:
@@ -527,12 +388,9 @@ func primaryFailedNode(entries []nvcrev1alpha1.FailedNode, name string) (nvcrev1
 		}
 	}
 	var best *nvcrev1alpha1.FailedNode
-	for i := range entries {
-		if entries[i].Name != name {
-			continue
-		}
-		if best == nil || rank(entries[i].Reason) < rank(best.Reason) {
-			best = &entries[i]
+	for i := range items {
+		if items[i].Name == name && (best == nil || rank(items[i].Reason) < rank(best.Reason)) {
+			best = &items[i]
 		}
 	}
 	if best == nil {
@@ -540,436 +398,118 @@ func primaryFailedNode(entries []nvcrev1alpha1.FailedNode, name string) (nvcrev1
 	}
 	return *best, true
 }
-
-func attributionFor(r nvcrev1alpha1.NodeFailureReason) string {
-	if r == nvcrev1alpha1.NodeFailureHardwareDetected {
+func attributionFor(reason nvcrev1alpha1.NodeFailureReason) string {
+	if reason == nvcrev1alpha1.NodeFailureHardwareDetected {
 		return AttributionNode
 	}
 	return AttributionGroup
 }
-
-// reduceDiagnoseVerdicts feeds the run-level reduction from the diagnose
-// status instead of the final round's groups: HealthyNodes passed at some
-// round, nodes in the failed-nodes record were confirmed faulty, and anything
-// else the run touched is inconclusive.
-func (b *builder) reduceDiagnoseVerdicts(cc *categoryContext) {
-	d := cc.wf.Status.Orchestration.Diagnose
-	category := cc.cat.Domain + "/" + cc.cat.Variant
-	seen := map[string]bool{}
-	for _, n := range d.HealthyNodes {
-		b.targeted[n] = true
-		seen[n] = true
-		id, _ := b.identityFor(n)
-		b.noteNodeVerdict(n, category, NodeVerdict{NodeID: id, HostnameAlias: n, Verdict: NodePassed, Attribution: AttributionGroup})
-	}
-	for _, fn := range cc.failedNodes {
-		if fn.Name == "" {
-			continue
-		}
-		b.targeted[fn.Name] = true
-		if seen[fn.Name] {
-			continue
-		}
-		primary, _ := primaryFailedNode(cc.failedNodes, fn.Name)
-		id, _ := b.identityFor(fn.Name)
-		b.noteNodeVerdict(fn.Name, category, NodeVerdict{
-			NodeID: id, HostnameAlias: fn.Name, Verdict: NodeFailed,
-			Reason: string(primary.Reason), Message: primary.Message, Attribution: attributionFor(primary.Reason),
-		})
-		seen[fn.Name] = true
-	}
-	var rest []string
-	rest = append(rest, d.SuspectNodes...)
-	rest = append(rest, d.NoNVLSuspectNodes...)
-	for _, r := range d.ScreeningResults {
-		rest = append(rest, r.Nodes...)
-	}
-	for _, r := range d.NoNVLScreeningResults {
-		rest = append(rest, r.Nodes...)
-	}
-	for _, g := range cc.wf.Status.Orchestration.Groups {
-		rest = append(rest, g.Nodes...)
-	}
-	for _, n := range rest {
-		b.targeted[n] = true
-		if seen[n] {
-			continue
-		}
-		seen[n] = true
-		id, _ := b.identityFor(n)
-		b.noteNodeVerdict(n, category, NodeVerdict{
-			NodeID: id, HostnameAlias: n, Verdict: NodeInconclusive,
-			Reason: "DiagnoseUnresolved", Message: "diagnose ended without confirming this node healthy or faulty",
-		})
-	}
-}
-
-func (b *builder) noteNodeVerdict(name, category string, nv NodeVerdict) {
-	b.nodeReasons[name] = append(b.nodeReasons[name], NodeReason{
-		Category:    category,
-		Verdict:     nv.Verdict,
-		Reason:      nv.Reason,
-		Message:     nv.Message,
-		Attribution: nv.Attribution,
-	})
-}
-
-func (b *builder) recordExclusions(cc *categoryContext) {
-	orch := cc.wf.Status.Orchestration
-	if orch == nil || len(orch.ExcludedNodes) == 0 {
-		return
-	}
-	category := cc.cat.Domain + "/" + cc.cat.Variant
-	for _, n := range sortedCopy(orch.ExcludedNodes) {
-		b.targeted[n] = true
-		b.excluded[n] = true
-		id, _ := b.identityFor(n)
-		b.rec.Exclusions = append(b.rec.Exclusions, Exclusion{
-			NodeID:        id,
-			HostnameAlias: n,
-			Category:      category,
-			ReasonCode:    exclusionCode(orch.ExclusionReason, n),
-			Message:       orch.ExclusionReason,
-		})
-	}
-}
-
-// exclusionCode classifies one node's exclusion from the merged reason text
-// the Workflow writes. The text is a series of sentences, one per cause; the
-// cordon and capacity sentences list their nodes, the architecture sentence
-// does not, so a node named nowhere fell to the architecture filter when that
-// sentence is present.
-func exclusionCode(reason, node string) string {
-	sawArch := false
-	for sentence := range strings.SplitSeq(reason, ". ") {
-		switch {
-		case strings.Contains(sentence, "unschedulable (cordoned)"):
-			if sentenceNamesNode(sentence, node) {
-				return "Cordoned"
-			}
-		case strings.Contains(sentence, "insufficient GPU capacity"):
-			if sentenceNamesNode(sentence, node) {
-				return "InsufficientCapacity"
-			}
-		case strings.Contains(sentence, "more than one GPU architecture"):
-			sawArch = true
-		}
-	}
-	if sawArch {
-		return "HeterogeneousGPU"
-	}
-	return "Unspecified"
-}
-
-func sentenceNamesNode(sentence, node string) bool {
-	_, list, ok := strings.Cut(sentence, ": ")
-	if !ok {
-		return false
-	}
-	for part := range strings.SplitSeq(list, ",") {
-		part = strings.TrimSpace(part)
-		if part == node || strings.HasPrefix(part, node+" has ") {
-			return true
-		}
-	}
-	return false
-}
-
-// recordWorkloadImage records the image the category asked for and, when a
-// pod of one of its Jobs is still around, the digest that pod ran.
-func (b *builder) recordWorkloadImage(cc *categoryContext) {
-	tj := cc.wf.Spec.JobTemplate.Spec.Workload.TrainJob
-	if tj == nil || tj.Trainer == nil || tj.Trainer.Image == nil || *tj.Trainer.Image == "" {
-		return
-	}
-	requested := *tj.Trainer.Image
-	img := WorkloadImage{Category: cc.cat.Domain + "/" + cc.cat.Variant, Requested: requested}
-	jobNames := make([]string, 0, len(cc.jobs))
-	for name := range cc.jobs {
-		jobNames = append(jobNames, name)
-	}
-	sort.Strings(jobNames)
-	for _, jobName := range jobNames {
-		var pods corev1.PodList
-		if err := b.c.List(b.ctx, &pods, client.InNamespace(cc.wf.Namespace), client.MatchingLabels{labelJob: jobName}); err != nil {
-			break
-		}
-		if digest := digestForImage(&pods, requested); digest != "" {
-			img.ResolvedDigest = &digest
-			break
-		}
-	}
-	b.rec.Provenance.WorkloadImages = append(b.rec.Provenance.WorkloadImages, img)
-}
-
-// digestForImage finds the sha256 digest of the container that ran image.
-func digestForImage(pods *corev1.PodList, image string) string {
-	for i := range pods.Items {
-		for _, cs := range pods.Items[i].Status.ContainerStatuses {
-			if cs.Image != image || cs.ImageID == "" {
-				continue
-			}
-			if idx := strings.Index(cs.ImageID, "sha256:"); idx >= 0 {
-				return cs.ImageID[idx:]
-			}
-		}
-	}
-	return ""
-}
-
-// ---------------------------------------------------------------------------
-// Measurements and thresholds
-// ---------------------------------------------------------------------------
-
-func goodputMeasurement(gm *nvcrev1alpha1.GoodputMeasurement) Measurement {
-	m := Measurement{
-		Kind:           "goodput",
-		Name:           gm.Name,
-		LogProfile:     gm.Spec.LogProfileRef,
-		StartTime:      gm.Status.StartTime,
-		CompletionTime: gm.Status.CompletionTime,
-		Goodput: &GoodputData{
-			Result:                gm.Status.Result,
-			AvgTFLOPSPerGPU:       gm.Status.AvgTFLOPSPerGPU,
-			AvgStepTimeSec:        gm.Status.AvgStepTimeSec,
-			TrainingTimeSec:       gm.Status.TrainingTimeSec,
-			LostWorkTimeSec:       gm.Status.LostWorkTimeSec,
-			RescheduleTimeSec:     gm.Status.RescheduleTimeSec,
-			ResumeTimeSec:         gm.Status.ResumeTimeSec,
-			CheckpointSaveTimeSec: gm.Status.CheckpointSaveTimeSec,
-			WarmupTimeSec:         gm.Status.WarmupTimeSec,
-			NonWarmupTimeSec:      gm.Status.NonWarmupTimeSec,
-			InterruptionCount:     gm.Status.InterruptionCount,
-			HighestStep:           gm.Status.HighestStep,
-		},
-	}
-	m.Frozen, m.FreezeCondition = freeze(gm.Status.Conditions, nvcrev1alpha1.GoodputMeasurementComplete)
-	return m
-}
-
-func bandwidthMeasurement(bm *nvcrev1alpha1.BandwidthMeasurement) Measurement {
-	m := Measurement{
-		Kind:           "bandwidth",
-		Name:           bm.Name,
-		LogProfile:     bm.Spec.LogProfileRef,
-		StartTime:      bm.Status.StartTime,
-		CompletionTime: bm.Status.CompletionTime,
-		Bandwidth: &BandwidthData{
-			TestType: bm.Spec.TestType,
-			Results:  bm.Status.Results,
-		},
-	}
-	m.Frozen, m.FreezeCondition = freeze(bm.Status.Conditions, nvcrev1alpha1.BandwidthMeasurementComplete)
-	return m
-}
-
-// freeze reads the Complete condition. Rule 4: recorded as observed, never
-// waited for.
-func freeze(conds []metav1.Condition, completeType string) (bool, *ConditionSummary) {
-	cond := meta.FindStatusCondition(conds, completeType)
-	if cond == nil {
-		return false, nil
-	}
-	var lt *metav1.Time
-	if !cond.LastTransitionTime.IsZero() {
-		t := cond.LastTransitionTime
-		lt = &t
-	}
-	return cond.Status == metav1.ConditionTrue, &ConditionSummary{
-		Type:               cond.Type,
-		Status:             string(cond.Status),
-		Reason:             cond.Reason,
-		Message:            cond.Message,
-		LastTransitionTime: lt,
-	}
-}
-
-// evaluateThresholds re-evaluates the Job's thresholds against the recorded
-// measurements so the record carries the numbers the verdict rests on. The
-// value mapping mirrors the Job controller's collectJobMeasuredValues:
-// bandwidth keys are the peak over all message sizes, goodput keys are read
-// only from a frozen measurement.
-func evaluateThresholds(thresholds map[string]string, measurements []Measurement) []ThresholdEvaluation {
-	if len(thresholds) == 0 {
-		return nil
-	}
-	measured := map[string]float64{}
-	for _, m := range measurements {
-		if m.Bandwidth != nil && len(m.Bandwidth.Results) > 0 {
-			var bus, alg float64
-			for _, r := range m.Bandwidth.Results {
-				bus = max(bus, parseFloat(r.BusBW))
-				alg = max(alg, parseFloat(r.AlgBW))
-			}
-			measured["busBandwidthGBps"] = bus
-			measured["algBandwidthGBps"] = alg
-		}
-		if m.Goodput != nil && m.Frozen {
-			if v := parseFloat(m.Goodput.Result); v > 0 {
-				measured["goodputRatio"] = v
-			}
-			if v := parseFloat(m.Goodput.AvgTFLOPSPerGPU); v > 0 {
-				measured["avgTFLOPsPerGPU"] = v
-			}
-			if v := parseFloat(m.Goodput.AvgStepTimeSec); v > 0 {
-				measured["avgStepTimeSec"] = v
-			}
-		}
-	}
-	keys := make([]string, 0, len(thresholds))
-	for k := range thresholds {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make([]ThresholdEvaluation, 0, len(keys))
-	for _, k := range keys {
-		te := ThresholdEvaluation{Metric: k, Expression: thresholds[k]}
-		v, ok := measured[k]
-		if !ok {
-			te.Reason = "NoMeasurement"
-			out = append(out, te)
-			continue
-		}
-		val := v
-		te.MeasuredValue = &val
-		passed, err := threshold.Evaluate(v, thresholds[k])
-		if err != nil {
-			te.Reason = "EvaluationError: " + err.Error()
-		} else {
-			p := passed
-			te.Passed = &p
-		}
-		out = append(out, te)
-	}
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
 	return out
 }
-
-// ---------------------------------------------------------------------------
-// Nodes, coverage, completeness
-// ---------------------------------------------------------------------------
-
-// identityFor returns the node's stable ID and completeness, reading the
-// live Node once when no snapshot covers it.
-func (b *builder) identityFor(name string) (string, string) {
-	id, ok := b.identity[name]
+func (b *builder) identity(workflowUID types.UID, name string) string {
+	workflowKey := string(workflowUID)
+	if id := b.workflowNodes[workflowKey][name]; id != "" {
+		return id
+	}
+	stableID := name
+	_, ok := b.identities[stableID]
 	if !ok {
-		id = b.liveIdentity(name)
-		b.identity[name] = id
+		b.gap("workflows/"+workflowKey+"/nodes/"+name, GapNodeIdentityMissing, "node absent from Workflow discovery evidence", "nodes[].id")
+		b.identities[stableID] = evidence.NodeIdentity{Name: name}
 	}
-	return nodeID(id)
+	if b.workflowNodes[workflowKey] == nil {
+		b.workflowNodes[workflowKey] = map[string]string{}
+	}
+	b.workflowNodes[workflowKey][name] = stableID
+	return stableID
 }
 
-func (b *builder) liveIdentity(name string) NodeIdentity {
-	node := &corev1.Node{}
-	if err := b.c.Get(b.ctx, client.ObjectKey{Name: name}, node); err != nil {
-		if !apierrors.IsNotFound(err) {
-			b.gap("nodes/"+name, GapNodeIdentityReadFailed, "Node could not be read: "+err.Error(), "nodes[].id")
-		}
-		return NodeIdentity{Name: name}
-	}
-	return identityOf(node)
-}
-
-func (b *builder) buildNodes() {
-	if b.opts.NodeIdentity == nil {
-		b.gap("nodes", GapNodeIdentityNotCaptured,
-			"no node-identity snapshot was captured when the target was resolved; identity was read from the live Node objects at emit time and may describe a replacement node",
-			"nodes[].id", "nodes[].kubernetesUid", "nodes[].systemUuid")
-	}
-	names := make([]string, 0, len(b.targeted))
-	for n := range b.targeted {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		idStr, completeness := b.identityFor(name)
-		id := b.identity[name]
-		node := Node{
-			ID:                   idStr,
-			HostnameAlias:        name,
-			KubernetesUID:        id.KubernetesUID,
-			SystemUUID:           id.SystemUUID,
-			GPUUUIDs:             []string{},
-			IdentityCompleteness: completeness,
-			ProviderID:           id.ProviderID,
-			GPU:                  NodeGPU{Product: id.GPUProduct, AllocatableCount: id.AllocatableGPUs},
-			Labels:               id.Labels,
-			Reasons:              b.nodeReasons[name],
-		}
-		if node.Labels == nil {
-			node.Labels = map[string]string{}
-		}
-		node.Outcome = reduceOutcome(node.Reasons, b.excluded[name])
-		b.rec.Nodes = append(b.rec.Nodes, node)
+func nodeID(id evidence.NodeIdentity) string {
+	switch {
+	case id.SystemUUID != "":
+		return id.SystemUUID
+	case id.KubernetesUID != "":
+		return id.KubernetesUID
+	default:
+		return id.Name
 	}
 }
 
-// reduceOutcome collapses one node's per-category verdicts. Failed anywhere
-// wins, then Inconclusive, then Passed if any category tested it; a node with
-// no verdicts was excluded or never reached a group.
+func (b *builder) nodes() {
+	ids := make([]string, 0, len(b.targeted))
+	for id := range b.targeted {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		left, right := b.identities[ids[i]], b.identities[ids[j]]
+		if left.Name == right.Name {
+			return ids[i] < ids[j]
+		}
+		return left.Name < right.Name
+	})
+	for _, stableID := range ids {
+		id := b.identities[stableID]
+		n := Node{ID: stableID, HostnameAlias: id.Name, KubernetesUID: id.KubernetesUID, SystemUUID: id.SystemUUID, ProviderID: id.ProviderID, GPU: NodeGPU{Product: id.GPUProduct, AllocatableCount: id.AllocatableGPUs}, Labels: id.Labels, Reasons: b.reasons[stableID]}
+		if n.Labels == nil {
+			n.Labels = map[string]string{}
+		}
+		n.Outcome = reduceOutcome(n.Reasons, b.excluded[stableID])
+		b.record.Nodes = append(b.record.Nodes, n)
+	}
+}
 func reduceOutcome(reasons []NodeReason, excluded bool) string {
 	failed, inconclusive, passed := false, false, false
 	for _, r := range reasons {
-		switch r.Verdict {
-		case NodeFailed:
-			failed = true
-		case NodeInconclusive:
-			inconclusive = true
-		case NodePassed:
-			passed = true
-		}
+		failed = failed || r.Verdict == NodeFailed
+		inconclusive = inconclusive || r.Verdict == NodeInconclusive
+		passed = passed || r.Verdict == NodePassed
 	}
-	switch {
-	case failed:
+	if failed {
 		return NodeFailed
-	case inconclusive:
-		return NodeInconclusive
-	case passed:
-		return NodePassed
-	case excluded:
-		return NodeExcluded
-	default:
-		return NodeUntested
 	}
+	if inconclusive {
+		return NodeInconclusive
+	}
+	if passed {
+		return NodePassed
+	}
+	if excluded {
+		return NodeExcluded
+	}
+	return NodeUntested
 }
-
-func (b *builder) buildCoverage() {
-	cov := &b.rec.Verdict.Coverage
-	for _, n := range b.rec.Nodes {
-		cov.Targeted++
+func (b *builder) coverage() {
+	c := &b.record.Verdict.Coverage
+	for _, n := range b.record.Nodes {
+		c.Targeted++
 		switch n.Outcome {
 		case NodeExcluded:
-			cov.Outcomes.Excluded++
-			continue
+			c.Outcomes.Excluded++
 		case NodePassed:
-			cov.Outcomes.Passed++
-			cov.Tested++
+			c.Outcomes.Passed++
+			c.Tested++
+			c.Eligible++
 		case NodeFailed:
-			cov.Outcomes.Failed++
-			cov.Tested++
+			c.Outcomes.Failed++
+			c.Tested++
+			c.Eligible++
 		default:
-			cov.Outcomes.Inconclusive++
+			c.Outcomes.Inconclusive++
+			c.Eligible++
 		}
-		cov.Eligible++
 	}
-	if b.rec.Verdict.Status == VerdictPassed && len(b.rec.Exclusions) > 0 {
-		b.rec.Verdict.Status = VerdictIncomplete
+	if b.record.Verdict.Status == VerdictPassed && len(b.record.Exclusions) > 0 {
+		b.record.Verdict.Status = VerdictIncomplete
 	}
 }
-
 func (b *builder) gap(scope, code, message string, fields ...string) {
-	b.rec.Completeness.Gaps = append(b.rec.Completeness.Gaps, Gap{
-		Scope:          scope,
-		Code:           code,
-		Message:        message,
-		AffectedFields: fields,
-	})
+	b.record.Completeness.Gaps = append(b.record.Completeness.Gaps, Gap{Scope: scope, Code: code, Message: message, AffectedFields: fields})
 }
-
-// finish gives every array a concrete value so the schema is stable: a
-// consumer never has to treat null and [] as the same thing.
 func (b *builder) finish() {
-	r := b.rec
+	r := b.record
 	if len(r.Completeness.Gaps) == 0 {
 		r.Completeness.State = CompletenessComplete
 		r.Completeness.Gaps = []Gap{}
@@ -999,133 +539,75 @@ func (b *builder) finish() {
 			r.Nodes[i].Reasons = []NodeReason{}
 		}
 	}
-	for ci := range r.Categories {
-		finishCategory(&r.Categories[ci])
+	for i := range r.Categories {
+		finishCategory(&r.Categories[i])
 	}
 }
 
-func finishCategory(c *Category) {
-	if c.Thresholds == nil {
-		c.Thresholds = map[string]string{}
+func finishCategory(category *Category) {
+	if category.Thresholds == nil {
+		category.Thresholds = map[string]string{}
 	}
-	if c.AppliedOverrides == nil {
-		c.AppliedOverrides = []nvcrev1alpha1.AppliedOverride{}
+	if category.AppliedOverrides == nil {
+		category.AppliedOverrides = []nvcrev1alpha1.AppliedOverride{}
 	}
-	if c.Iterations == nil {
-		c.Iterations = []Iteration{}
+	if category.Iterations == nil {
+		category.Iterations = []Iteration{}
 	}
-	if c.Diagnose != nil {
-		finishDiagnose(c.Diagnose)
+	if category.Diagnose != nil {
+		finishDiagnose(category.Diagnose)
 	}
-	for ii := range c.Iterations {
-		it := &c.Iterations[ii]
-		if it.Groups == nil {
-			it.Groups = []Group{}
+	for ii := range category.Iterations {
+		iteration := &category.Iterations[ii]
+		if iteration.Groups == nil {
+			iteration.Groups = []Group{}
 		}
-		for gi := range it.Groups {
-			g := &it.Groups[gi]
-			if g.Nodes == nil {
-				g.Nodes = []string{}
+		for gi := range iteration.Groups {
+			group := &iteration.Groups[gi]
+			if group.Nodes == nil {
+				group.Nodes = []string{}
 			}
-			if g.Domains == nil {
-				g.Domains = []string{}
+			if group.Domains == nil {
+				group.Domains = []string{}
 			}
-			for ai := range g.Attempts {
-				finishAttempt(&g.Attempts[ai])
+			for ai := range group.Attempts {
+				finishAttempt(&group.Attempts[ai])
 			}
-		}
-	}
-}
-
-func finishDiagnose(d *Diagnose) {
-	if d.HealthyNodes == nil {
-		d.HealthyNodes = []string{}
-	}
-	if d.SuspectNodes == nil {
-		d.SuspectNodes = []string{}
-	}
-	if d.NoNVLSuspectNodes == nil {
-		d.NoNVLSuspectNodes = []string{}
-	}
-	if d.InfrastructureFaults == nil {
-		d.InfrastructureFaults = []nvcrev1alpha1.InfrastructureFault{}
-	}
-	if d.ScreeningResults == nil {
-		d.ScreeningResults = map[string]nvcrev1alpha1.DomainScreeningResult{}
-	}
-}
-
-func finishAttempt(a *Attempt) {
-	if a.Measurements == nil {
-		a.Measurements = []Measurement{}
-	}
-	if a.ThresholdEvaluations == nil {
-		a.ThresholdEvaluations = []ThresholdEvaluation{}
-	}
-	if a.NodeVerdicts == nil {
-		a.NodeVerdicts = []NodeVerdict{}
-	}
-	for mi := range a.Measurements {
-		if bw := a.Measurements[mi].Bandwidth; bw != nil && bw.Results == nil {
-			bw.Results = []nvcrev1alpha1.BandwidthResult{}
 		}
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-func groupOutcome(p nvcrev1alpha1.GroupPhase) string {
-	switch p {
-	case nvcrev1alpha1.GroupSucceeded:
-		return OutcomeSucceeded
-	case nvcrev1alpha1.GroupFailed:
-		return OutcomeFailed
-	default:
-		return OutcomeInconclusive
+func finishDiagnose(diagnose *Diagnose) {
+	if diagnose.HealthyNodes == nil {
+		diagnose.HealthyNodes = []string{}
+	}
+	if diagnose.SuspectNodes == nil {
+		diagnose.SuspectNodes = []string{}
+	}
+	if diagnose.NoNVLSuspectNodes == nil {
+		diagnose.NoNVLSuspectNodes = []string{}
+	}
+	if diagnose.InfrastructureFaults == nil {
+		diagnose.InfrastructureFaults = []nvcrev1alpha1.InfrastructureFault{}
+	}
+	if diagnose.ScreeningResults == nil {
+		diagnose.ScreeningResults = map[string]nvcrev1alpha1.DomainScreeningResult{}
 	}
 }
 
-// detectTestScale mirrors pkg/report: what the operator asked for when the
-// Certification recorded it, otherwise inferred from the orchestration spec.
-func detectTestScale(wf *nvcrev1alpha1.Workflow) string {
-	if req := wf.GetAnnotations()[annotationRequestedTestScale]; req != "" {
-		return req
+func finishAttempt(attempt *Attempt) {
+	if attempt.Measurements == nil {
+		attempt.Measurements = []Measurement{}
 	}
-	o := wf.Spec.Orchestration
-	if o.Topology != nil && o.Topology.StrictDomain {
-		return nvcrev1alpha1.TestScaleIntraRack
+	if attempt.ThresholdEvaluations == nil {
+		attempt.ThresholdEvaluations = []ThresholdEvaluation{}
 	}
-	if o.Diagnose != nil {
-		return nvcrev1alpha1.TestScaleDiagnose
+	if attempt.NodeVerdicts == nil {
+		attempt.NodeVerdicts = []NodeVerdict{}
 	}
-	if wf.Status.Orchestration != nil && wf.Status.Orchestration.NodesPerJob == 1 {
-		return nvcrev1alpha1.TestScaleIntraNode
+	for i := range attempt.Measurements {
+		if bandwidth := attempt.Measurements[i].Bandwidth; bandwidth != nil && bandwidth.Results == nil {
+			bandwidth.Results = []nvcrev1alpha1.BandwidthResult{}
+		}
 	}
-	return nvcrev1alpha1.TestScaleFullScale
-}
-
-func parseFloat(s string) float64 {
-	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-	if err != nil {
-		return 0
-	}
-	return v
-}
-
-func sortedCopy(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
-	return out
-}
-
-// Marshal renders the record as the bytes that are stored. Indented so a
-// human can read the object straight out of the bucket.
-func Marshal(r *Record) ([]byte, error) {
-	b, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(b, '\n'), nil
 }

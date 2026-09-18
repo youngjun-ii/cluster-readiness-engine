@@ -2,5 +2,4 @@
 set:
   - resultsArchive.enabled=true
   - resultsArchive.clusterId=cluster-a
-  - resultsArchive.destinations.prod=gs://nvcre-results-prod/runs
   - resultsArchive.auth.mode=serviceAccountKey

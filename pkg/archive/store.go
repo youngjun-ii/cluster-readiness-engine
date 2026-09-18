@@ -7,7 +7,7 @@
 // nothing about NVCRE types; the record itself is built by pkg/archive/record
 // and handed here as bytes.
 //
-// The Store interface is deliberately two methods. It exists so the controller
+// The Store interface is deliberately one method. It exists so the controller
 // and its tests can run without a bucket, not to abstract over storage
 // providers.
 package archive
@@ -16,45 +16,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"strings"
 )
 
-// ErrAlreadyExists is returned by Create when the key is already present. The
-// caller decides whether that is a benign duplicate (an earlier attempt landed
-// but was never recorded) or a conflict, by comparing the existing object's
-// checksum with Stat.
+// ErrAlreadyExists is returned by Create when the key is already present.
 var ErrAlreadyExists = errors.New("object already exists")
-
-// ErrNotFound is returned by Stat when the key is absent.
-var ErrNotFound = errors.New("object not found")
-
-// ObjectInfo describes a stored object. Generation is the store's version
-// counter for the key (GCS "generation"); CRC32C is the Castagnoli checksum of
-// the object body, which is what GCS reports and what the controller compares
-// against the body it would have written.
-type ObjectInfo struct {
-	Generation int64
-	CRC32C     uint32
-	Size       int64
-}
 
 // Store is a write-once object store.
 type Store interface {
 	// Create writes body at key only if the key does not exist yet, and
 	// returns ErrAlreadyExists when it does. It must never overwrite.
-	Create(ctx context.Context, key string, body []byte, contentType string) (ObjectInfo, error)
-	// Stat returns the existing object's info, or ErrNotFound.
-	Stat(ctx context.Context, key string) (ObjectInfo, error)
-}
-
-// castagnoli is the CRC32C polynomial table shared by the stores.
-var castagnoli = crc32.MakeTable(crc32.Castagnoli)
-
-// CRC32C returns the Castagnoli checksum of b, the checksum GCS reports for an
-// object.
-func CRC32C(b []byte) uint32 {
-	return crc32.Checksum(b, castagnoli)
+	Create(ctx context.Context, key string, body []byte, contentType string) error
 }
 
 // Destination is a parsed gs://bucket/prefix URL. Prefix has no leading or

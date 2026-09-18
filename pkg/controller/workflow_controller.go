@@ -31,6 +31,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/evidence"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/naming"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/noderesults"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/orchestration"
@@ -56,6 +57,12 @@ type WorkflowReconciler struct {
 	Clientset          *kubernetes.Clientset
 	Recorder           events.EventRecorder
 	JobRequeueInterval time.Duration
+	// CaptureArchiveEvidence enables private, create-only lifecycle snapshots.
+	// It is set only when the results archive is configured.
+	CaptureArchiveEvidence bool
+	// IncludeArchiveFailureLog controls whether bounded Job failure tails are
+	// copied into private attempt evidence.
+	IncludeArchiveFailureLog bool
 	// MaxConcurrentReconciles bounds the number of Workflow objects reconciled concurrently.
 	MaxConcurrentReconciles int
 }
@@ -363,6 +370,7 @@ func (r *WorkflowReconciler) discoverAndPartition(ctx context.Context, workflow 
 		}
 		return ctrl.Result{}, nil
 	}
+	discoveredNodes := append([]corev1.Node(nil), nodes...)
 
 	// Detect platform and GPU architecture from target nodes.
 	// Fail if nodes report different platforms (likely misconfiguration).
@@ -449,6 +457,9 @@ func (r *WorkflowReconciler) discoverAndPartition(ctx context.Context, workflow 
 	// excludes nodes still reports Succeeded, so without this the report says
 	// PASSED and never mentions what went untested.
 	orch.ExcludedNodes, orch.ExclusionReason = exclusionSummary(cordoned, archExcluded, gpuArch, capacityExcluded, gpusPerNode)
+	if err := r.captureDiscoveryEvidence(ctx, workflow, discoveredNodes, cordoned, archExcluded, gpuArch, capacityExcluded, gpusPerNode); err != nil {
+		return ctrl.Result{}, fmt.Errorf("persist discovery evidence: %w", err)
+	}
 
 	// Every surviving node was dropped for capacity. Fail with the requirement
 	// and the best the fleet offers instead of partitioning into groups that
@@ -980,7 +991,7 @@ func (r *WorkflowReconciler) launchPendingGroups(ctx context.Context, workflow *
 func (r *WorkflowReconciler) createJobForGroup(ctx context.Context, workflow *nvcrev1alpha1.Workflow, group *nvcrev1alpha1.GroupStatus, orch *nvcrev1alpha1.OrchestrationStatus) error {
 	log := logf.FromContext(ctx)
 
-	jobName := r.getGroupJobName(workflow, group.Name, orch.CurrentIteration)
+	jobName := r.getGroupJobName(workflow, group.Name, orch.CurrentIteration, group.Retries)
 
 	specCopy := workflow.Spec.JobTemplate.Spec.DeepCopy()
 
@@ -1017,7 +1028,6 @@ func (r *WorkflowReconciler) createJobForGroup(ctx context.Context, workflow *nv
 		Namespace: workflow.Namespace,
 		Spec:      *patchedSpec,
 	}
-
 	// Pin to this group's specific nodes via NodeAffinity
 	adapter, err := workload.ForSpec(&job.Spec.Workload)
 	if err != nil {
@@ -1078,6 +1088,9 @@ func (r *WorkflowReconciler) createJobForGroup(ctx context.Context, workflow *nv
 		maps.Copy(annotations, workflow.Spec.JobTemplate.Annotations)
 	}
 	annotations["nvcre.nvidia.com/group-nodes"] = strings.Join(group.Nodes, ",")
+	if evidence.Enabled(workflow) {
+		annotations[evidence.AnnotationVersion] = evidence.Version
+	}
 	job.SetAnnotations(annotations)
 
 	// Set owner reference so the Job is garbage collected when the Workflow is deleted
@@ -1335,6 +1348,13 @@ func (r *WorkflowReconciler) completeTerminalGroup(
 ) (draining bool, err error) {
 	log := logf.FromContext(ctx)
 	jobFailed := ts.failed || ts.hwFailed || ts.validationFailed
+	ready, err := r.captureAttemptEvidence(ctx, workflow, orch, g, job, ts)
+	if err != nil {
+		return false, fmt.Errorf("persist attempt evidence: %w", err)
+	}
+	if !ready {
+		return true, nil
+	}
 
 	if jobFailed {
 		// Delete the workload to free GPUs and stop hanging pods. This happens
@@ -2473,13 +2493,16 @@ func (r *WorkflowReconciler) setExclusiveCondition(ctx context.Context, workflow
 }
 
 // getGroupJobName returns the name for a Job created for a specific group and iteration.
-func (r *WorkflowReconciler) getGroupJobName(workflow *nvcrev1alpha1.Workflow, groupName string, iteration int) string {
+func (r *WorkflowReconciler) getGroupJobName(workflow *nvcrev1alpha1.Workflow, groupName string, iteration, retry int) string {
 	var raw string
 	isDiagnose := workflow.Spec.Orchestration.Diagnose != nil
 	if !isDiagnose && !hasMultipleIterations(workflow.Spec.Orchestration) && workflow.Status.Orchestration != nil && workflow.Status.Orchestration.TotalGroups <= 1 {
 		raw = workflow.Name + "-job"
 	} else {
 		raw = fmt.Sprintf("%s-%s-iter-%d", workflow.Name, groupName, iteration)
+	}
+	if retry > 0 {
+		raw = fmt.Sprintf("%s-retry-%d", raw, retry)
 	}
 	return naming.Truncate(raw, naming.MaxJobNameLen)
 }

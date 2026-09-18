@@ -6,8 +6,8 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -15,12 +15,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
+	"google.golang.org/api/googleapi"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -36,9 +35,7 @@ import (
 // Workflows are doing, and how the store misbehaves.
 type archiveTestInput struct {
 	Config struct {
-		Default      string            `yaml:"default"`
-		Destinations map[string]string `yaml:"destinations"`
-		ClusterID    string            `yaml:"clusterId"`
+		ClusterID string `yaml:"clusterId"`
 	} `yaml:"config"`
 	// Disabled leaves the reconciler's Archive nil.
 	Disabled    bool              `yaml:"disabled"`
@@ -60,9 +57,10 @@ type archiveTestInput struct {
 		Kind  string `yaml:"kind"`
 		Count int    `yaml:"count"`
 	} `yaml:"storeFailures"`
-	// Preexisting stages an object at the computed key: "same" stores the
-	// exact body the controller would write, "different" stores other bytes.
-	Preexisting string `yaml:"preexisting"`
+	// Preexisting stages an object at the computed key.
+	Preexisting bool `yaml:"preexisting"`
+	// PatchFailureAt injects a failure on the numbered Certification patch.
+	PatchFailureAt int `yaml:"patchFailureAt"`
 	// Passes is how many times maybeArchive is called.
 	Passes int `yaml:"passes"`
 	// Deletion runs handleDeletion instead of maybeArchive.
@@ -70,10 +68,11 @@ type archiveTestInput struct {
 }
 
 const (
-	archiveTestCertName  = "cert-archive"
-	archiveTestCertUID   = "0f1e2d3c-0000-4000-8000-0000000000aa"
-	archiveTestReason    = "Test"
-	archiveTestUploadURL = "https://storage.googleapis.com/upload"
+	archiveTestCertName    = "cert-archive"
+	archiveTestCertUID     = "0f1e2d3c-0000-4000-8000-0000000000aa"
+	archiveTestReason      = "Test"
+	archiveTestDestination = "gs://b/p"
+	archiveTestSystemUUID  = "SYS-1"
 )
 
 // archiveTestOutput is what one scenario leaves behind.
@@ -108,18 +107,30 @@ type archiveWant struct {
 	finalizerKept *bool
 }
 
-const (
-	backoffCapString     = "15m0s"
-	preexistingDifferent = "different"
-)
+type failNthPatchClient struct {
+	client.Client
+	failAt  int
+	patches int
+}
+
+func (c *failNthPatchClient) Patch(
+	ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption,
+) error {
+	c.patches++
+	if c.patches == c.failAt {
+		return errors.New("injected patch failure")
+	}
+	return c.Client.Patch(ctx, obj, patch, opts...)
+}
+
+const backoffCapString = "15m0s"
 
 const testURI = "gs://nvcre-results/runs/v=1/cluster=cluster-a/date=2026-09-16/run=" + archiveTestCertUID + "/record.json"
 
 func prodConfig() archiveTestInput {
 	var in archiveTestInput
-	in.Config.Default = "prod"
 	in.Config.ClusterID = "cluster-a"
-	in.Config.Destinations = map[string]string{"prod": "gs://nvcre-results/runs", "dev": "gs://nvcre-results-dev"}
+	in.Annotations = map[string]string{AnnotationArchiveDestination: "gs://nvcre-results/runs"}
 	in.Terminal = nvcrev1alpha1.CertificationSucceeded
 	in.TerminalAt = "2026-09-16T23:30:00Z"
 	in.Workflows = append(in.Workflows, archiveWorkflow("wf", "Succeeded", nil))
@@ -178,33 +189,37 @@ func TestCertificationArchive(t *testing.T) {
 				uri:    "gs://nvcre-results/runs/v=1/cluster=cluster-a/date=2026-09-17/run=" + archiveTestCertUID + "/record.json"},
 		},
 		{
-			// archive: "false" writes nothing and records Skipped.
-			name: "opt-out",
+			// No destination annotation means the run did not opt in.
+			name: "no destination is silent",
 			in: func() archiveTestInput {
 				in := prodConfig()
-				in.Annotations = map[string]string{AnnotationArchive: "false"}
+				in.Annotations = nil
 				return in
 			},
-			want: archiveWant{states: []string{ArchiveStateSkipped}, requeues: []string{"0s"}, events: []string{}},
-		},
-		{
-			// No default and no annotation: nothing at all is written.
-			name: "no default is silent",
-			in:   func() archiveTestInput { in := prodConfig(); in.Config.Default = ""; return in },
 			want: archiveWant{states: []string{""}, requeues: []string{"0s"}, events: []string{}},
 		},
 		{
-			// An unknown destination is Misconfigured, terminal, with one Warning
-			// naming the valid names; a second pass does nothing more.
-			name: "unknown destination",
+			// The controller rejects an invalid URI even when a caller bypasses the CLI.
+			name: "invalid destination",
 			in: func() archiveTestInput {
 				in := prodConfig()
-				in.Annotations = map[string]string{AnnotationArchiveDestination: "staging"}
+				in.Annotations = map[string]string{AnnotationArchiveDestination: "s3://bucket/runs"}
 				in.Passes = 2
 				return in
 			},
 			want: archiveWant{states: []string{ArchiveStateMisconfigured, ArchiveStateMisconfigured}, requeues: []string{"0s", "0s"},
-				events: []string{"Warning/" + ReasonArchiveMisconfigured}, errorContains: "valid destinations: dev, prod"},
+				events: []string{"Warning/" + ReasonArchiveMisconfigured}, errorContains: "must start with gs://"},
+		},
+		{
+			// Once pinned, a run cannot be redirected by changing its destination.
+			name: "changed destination rejected",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.Annotations[AnnotationArchiveURI] = "gs://other/runs/record.json"
+				return in
+			},
+			want: archiveWant{states: []string{ArchiveStateMisconfigured}, requeues: []string{"0s"},
+				events: []string{"Warning/" + ReasonArchiveMisconfigured}, errorContains: "does not match destination"},
 		},
 		{
 			// A still-running owned Workflow can revert the terminal state:
@@ -269,6 +284,20 @@ func TestCertificationArchive(t *testing.T) {
 			},
 		},
 		{
+			// Losing the Retry state patch must not bypass the storage backoff.
+			name: "write and state patch failure keeps storage backoff",
+			in: func() archiveTestInput {
+				in := prodConfig()
+				in.StoreFailures = failures("forbidden", 1)
+				in.PatchFailureAt = 2 // URI patch succeeds; Retry state patch fails.
+				return in
+			},
+			want: archiveWant{
+				states: []string{ArchiveStatePending}, requeues: []string{backoffCapString},
+				creates: 1, events: []string{},
+			},
+		},
+		{
 			// A 400 cannot be fixed by retrying: Misconfigured and terminal.
 			name: "invalid is terminal",
 			in: func() archiveTestInput {
@@ -281,23 +310,17 @@ func TestCertificationArchive(t *testing.T) {
 				creates: 1, events: []string{"Warning/" + ReasonArchiveMisconfigured}},
 		},
 		{
-			// The object exists with our exact bytes: an earlier attempt landed.
-			name: "duplicate same checksum",
-			in:   func() archiveTestInput { in := prodConfig(); in.Preexisting = "same"; return in },
-			want: archiveWant{states: []string{ArchiveStateSucceeded}, requeues: []string{"0s"}, stored: 1, creates: 1,
-				events: []string{"Normal/" + ReasonArchived}},
-		},
-		{
-			// The object exists with different bytes: Conflict, never overwritten.
-			name: "duplicate different checksum",
+			// Any object at this run's UID-addressed key means an earlier attempt
+			// landed. The create-only precondition still prevents overwriting it.
+			name: "preexisting object is success",
 			in: func() archiveTestInput {
 				in := prodConfig()
-				in.Preexisting = preexistingDifferent
+				in.Preexisting = true
 				in.Passes = 2
 				return in
 			},
-			want: archiveWant{states: []string{ArchiveStateConflict, ArchiveStateConflict}, requeues: []string{"0s", "0s"},
-				stored: 1, creates: 1, events: []string{"Warning/" + ReasonArchiveConflict}, errorContains: "different checksum"},
+			want: archiveWant{states: []string{ArchiveStateSucceeded, ArchiveStateSucceeded}, requeues: []string{"0s", "0s"},
+				stored: 1, creates: 1, events: []string{"Normal/" + ReasonArchived}},
 		},
 		{
 			// run --cleanup: handleDeletion archives once, then deletes the
@@ -339,7 +362,7 @@ func TestCertificationArchive(t *testing.T) {
 			last := out.Passes[len(out.Passes)-1].Annotations
 			if tc.want.uri != "" {
 				require.Equal(t, tc.want.uri, last[AnnotationArchiveURI])
-				require.Equal(t, []string{"prod:" + strings.TrimPrefix(tc.want.uri, "gs://nvcre-results/")}, out.StoredKeys)
+				require.Equal(t, []string{"nvcre-results:" + strings.TrimPrefix(tc.want.uri, "gs://nvcre-results/")}, out.StoredKeys)
 			}
 			if tc.want.errorContains != "" {
 				require.Contains(t, last[AnnotationArchiveError], tc.want.errorContains)
@@ -349,13 +372,60 @@ func TestCertificationArchive(t *testing.T) {
 				require.Equal(t, *tc.want.finalizerKept, *out.FinalizerKept)
 				require.Empty(t, out.WorkflowsLeft, "owned Workflows are deleted")
 			}
-			if tc.want.stored > 0 && in.Preexisting != preexistingDifferent {
+			if tc.want.stored > 0 && !in.Preexisting {
 				require.Equal(t, record.VerdictPassed, out.RecordVerdict)
 				require.Equal(t, "cluster-a", out.RecordClusterID)
 			}
 			_ = stores
 		})
 	}
+}
+
+// A successful object create is not the end of the state machine until its
+// Succeeded annotation is durable. If that patch fails, the controller must
+// schedule another pass; create-only storage makes that retry safe.
+func TestCertificationArchiveSuccessPatchFailureRequeues(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, nvcrev1alpha1.AddToScheme(scheme))
+
+	in := prodConfig()
+	cert := archiveTestCertification(in)
+	wf := &nvcrev1alpha1.Workflow{
+		Name:      in.Workflows[0].Name,
+		Namespace: cert.Namespace,
+		Labels:    map[string]string{labelCertification: cert.Name}}
+	require.NoError(t, controllerutil.SetControllerReference(cert, wf, scheme))
+	wf.Status.Conditions = []metav1.Condition{{
+		Type: nvcrev1alpha1.WorkflowSucceeded, Status: metav1.ConditionTrue, Reason: archiveTestReason,
+	}}
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cert, wf).Build()
+	c := &failNthPatchClient{Client: base, failAt: 2}
+	store := archive.NewMemoryStore()
+	recorder := &recordingEventRecorder{}
+	r := &CertificationReconciler{
+		Client: c, Scheme: scheme, Recorder: recorder, WorkflowRequeueInterval: time.Second,
+		Archive: &ArchiveConfig{
+			ClusterID:      in.Config.ClusterID,
+			StoreForBucket: func(string) archive.Store { return store },
+		},
+	}
+
+	fresh := &nvcrev1alpha1.Certification{}
+	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(cert), fresh))
+	require.Equal(t, time.Second, r.maybeArchive(context.Background(), fresh))
+	require.Len(t, store.Keys(), 1, "the object write completed before the state patch failed")
+
+	persisted := &nvcrev1alpha1.Certification{}
+	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(cert), persisted))
+	require.Equal(t, ArchiveStatePending, persisted.Annotations[AnnotationArchiveState])
+	require.Empty(t, recorder.reasons(), "success is not announced until its state is durable")
+
+	require.Zero(t, r.maybeArchive(context.Background(), persisted))
+	require.NoError(t, base.Get(context.Background(), client.ObjectKeyFromObject(cert), persisted))
+	require.Equal(t, ArchiveStateSucceeded, persisted.Annotations[AnnotationArchiveState])
+	require.Equal(t, 2, store.Creates(), "the retry observes the create-only object and finishes state persistence")
+	require.Equal(t, []string{"Normal/" + ReasonArchived}, recorder.reasons())
 }
 
 // runArchiveScenario builds the fake cluster, the reconciler and the stores
@@ -384,26 +454,27 @@ func runArchiveScenario(t *testing.T, in archiveTestInput) (*archiveTestOutput, 
 		objs = append(objs, wf)
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	var reconcilerClient client.Client = c
+	if in.PatchFailureAt > 0 {
+		reconcilerClient = &failNthPatchClient{Client: c, failAt: in.PatchFailureAt}
+	}
 
 	recorder := &recordingEventRecorder{}
-	r := &CertificationReconciler{Client: c, Scheme: scheme, Recorder: recorder, WorkflowRequeueInterval: time.Second}
+	r := &CertificationReconciler{Client: reconcilerClient, Scheme: scheme, Recorder: recorder, WorkflowRequeueInterval: time.Second}
 	stores := map[string]*archive.MemoryStore{}
 	if !in.Disabled {
 		cfg := &ArchiveConfig{
-			Destinations: map[string]ArchiveDestination{},
-			Default:      in.Config.Default,
-			ClusterID:    in.Config.ClusterID,
+			ClusterID: in.Config.ClusterID,
 			Provenance: record.Provenance{
 				Controller: record.ControllerProvenance{Version: "v-test"},
 				Catalog:    record.CatalogProvenance{Revision: "rev-test"},
 			},
 		}
-		for name, raw := range in.Config.Destinations {
-			d, err := archive.ParseDestination(raw)
-			require.NoError(t, err)
-			store := archive.NewMemoryStore()
-			stores[name] = store
-			cfg.Destinations[name] = ArchiveDestination{Destination: d, Store: store}
+		cfg.StoreForBucket = func(bucket string) archive.Store {
+			if stores[bucket] == nil {
+				stores[bucket] = archive.NewMemoryStore()
+			}
+			return stores[bucket]
 		}
 		r.Archive = cfg
 	}
@@ -413,18 +484,16 @@ func runArchiveScenario(t *testing.T, in archiveTestInput) (*archiveTestOutput, 
 	if r.Archive != nil {
 		sel = r.selectArchiveDestination(cert)
 	}
-	if sel.dest != nil {
-		store := sel.dest.Store.(*archive.MemoryStore)
+	if sel.destination != nil {
+		store := sel.store.(*archive.MemoryStore)
 		for _, f := range in.StoreFailures {
 			store.FailNext(f.Count, archiveFailure(f.Kind))
 		}
-		if in.Preexisting != "" {
-			key, body, err := archiveExpectedObject(context.Background(), r, cert, sel.dest)
-			require.NoError(t, err)
-			if in.Preexisting == preexistingDifferent {
-				body = []byte(`{"kind":"SomethingElse"}`)
-			}
-			store.Put(key, body, record.ContentType)
+		if in.Preexisting {
+			terminalAt := record.TerminalTime(cert)
+			require.NotNil(t, terminalAt)
+			key := sel.destination.Key(archiveObjectKey(r.Archive.ClusterID, terminalAt.Time, string(cert.UID)))
+			store.Put(key, []byte(`{"kind":"SomethingElse"}`), record.ContentType)
 		}
 	}
 
@@ -547,38 +616,18 @@ func archiveTestCertification(in archiveTestInput) *nvcrev1alpha1.Certification 
 	return cert
 }
 
-// archiveExpectedObject computes the key and body the controller would write,
-// for staging a pre-existing object.
-func archiveExpectedObject(ctx context.Context, r *CertificationReconciler, cert *nvcrev1alpha1.Certification, dest *ArchiveDestination) (string, []byte, error) {
-	terminalAt := record.TerminalTime(cert)
-	if terminalAt == nil {
-		return "", nil, fmt.Errorf("certification is not terminal")
-	}
-	rec, err := record.Build(ctx, r.Client, cert, record.Options{
-		ClusterID: r.Archive.ClusterID, Provenance: r.Archive.Provenance,
-	})
-	if err != nil {
-		return "", nil, err
-	}
-	body, err := record.Marshal(rec)
-	if err != nil {
-		return "", nil, err
-	}
-	return dest.Destination.Key(archiveObjectKey(r.Archive.ClusterID, terminalAt.Time, string(cert.UID))), body, nil
-}
-
 func archiveFailure(kind string) error {
 	switch kind {
 	case "unauthenticated":
-		return &archive.HTTPError{StatusCode: http.StatusUnauthorized, Method: http.MethodPost, URL: archiveTestUploadURL}
+		return &googleapi.Error{Code: 401, Message: "invalid credentials"}
 	case "forbidden":
-		return &archive.HTTPError{StatusCode: http.StatusForbidden, Method: http.MethodPost, URL: archiveTestUploadURL, Body: "insufficient permission"}
+		return &googleapi.Error{Code: 403, Message: "insufficient permission"}
 	case "notfound":
-		return &archive.HTTPError{StatusCode: http.StatusNotFound, Method: http.MethodPost, URL: archiveTestUploadURL}
+		return &googleapi.Error{Code: 404, Message: "bucket not found"}
 	case "invalid":
-		return &archive.HTTPError{StatusCode: http.StatusBadRequest, Method: http.MethodPost, URL: archiveTestUploadURL, Body: "bad request"}
+		return &googleapi.Error{Code: 400, Message: "bad request"}
 	default:
-		return &archive.HTTPError{StatusCode: http.StatusServiceUnavailable, Method: http.MethodPost, URL: archiveTestUploadURL}
+		return &googleapi.Error{Code: 503, Message: "unavailable"}
 	}
 }
 
@@ -614,140 +663,4 @@ func (f *recordingEventRecorder) reasons() []string {
 		return []string{}
 	}
 	return append([]string(nil), f.events...)
-}
-
-// TestCaptureNodeIdentity pins the one pre-terminal write this feature makes:
-// the snapshot ConfigMap is owned by the Certification, referenced from its
-// annotation, only written for runs that will be archived, never overwritten
-// when a foreign ConfigMap holds the name, and removed by deletion.
-func TestCaptureNodeIdentity(t *testing.T) {
-	scheme := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := nvcrev1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	nodes := []corev1.Node{{}}
-	nodes[0].Name = "gpu-01"
-	nodes[0].UID = "node-uid-1"
-	nodes[0].Status.NodeInfo.SystemUUID = "SYS-1"
-
-	newReconciler := func(cert *nvcrev1alpha1.Certification, extra ...client.Object) (*CertificationReconciler, client.Client) {
-		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{cert}, extra...)...).Build()
-		dest, _ := archive.ParseDestination("gs://b/p")
-		return &CertificationReconciler{Client: c, Scheme: scheme, Archive: &ArchiveConfig{
-			Default:      "d",
-			Destinations: map[string]ArchiveDestination{"d": {Destination: dest, Store: archive.NewMemoryStore()}},
-		}}, c
-	}
-
-	t.Run("captured and readable", func(t *testing.T) {
-		cert := archiveTestCertification(archiveTestInput{})
-		r, c := newReconciler(cert)
-		r.captureNodeIdentity(ctx, cert, nodes)
-
-		fresh := &nvcrev1alpha1.Certification{}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(cert), fresh); err != nil {
-			t.Fatal(err)
-		}
-		ref := fresh.Annotations[AnnotationNodeIdentityRef]
-		if ref != "node-identity-"+archiveTestCertName {
-			t.Fatalf("annotation = %q", ref)
-		}
-		cm := &corev1.ConfigMap{}
-		if err := c.Get(ctx, client.ObjectKey{Namespace: testNS, Name: ref}, cm); err != nil {
-			t.Fatal(err)
-		}
-		if !metav1.IsControlledBy(cm, fresh) {
-			t.Fatal("ConfigMap must be controlled by the Certification")
-		}
-		ids := r.readNodeIdentity(ctx, fresh)
-		if len(ids) != 1 || ids[0].SystemUUID != "SYS-1" || ids[0].KubernetesUID != "node-uid-1" {
-			t.Fatalf("readNodeIdentity = %+v", ids)
-		}
-
-		// Deletion removes it even without a garbage collector.
-		if err := r.deleteNodeIdentity(ctx, fresh); err != nil {
-			t.Fatal(err)
-		}
-		if err := c.Get(ctx, client.ObjectKey{Namespace: testNS, Name: ref}, cm); err == nil {
-			t.Fatal("ConfigMap should be gone")
-		}
-	})
-
-	t.Run("not captured when the run will not be archived", func(t *testing.T) {
-		in := archiveTestInput{Annotations: map[string]string{AnnotationArchive: "false"}}
-		cert := archiveTestCertification(in)
-		r, c := newReconciler(cert)
-		r.captureNodeIdentity(ctx, cert, nodes)
-		fresh := &nvcrev1alpha1.Certification{}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(cert), fresh); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := fresh.Annotations[AnnotationNodeIdentityRef]; ok {
-			t.Fatal("opted-out run must not capture identity")
-		}
-		var cms corev1.ConfigMapList
-		if err := c.List(ctx, &cms); err != nil {
-			t.Fatal(err)
-		}
-		if len(cms.Items) != 0 {
-			t.Fatalf("expected no ConfigMaps, got %d", len(cms.Items))
-		}
-	})
-
-	t.Run("archive disabled is a no-op", func(t *testing.T) {
-		cert := archiveTestCertification(archiveTestInput{})
-		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cert).Build()
-		r := &CertificationReconciler{Client: c, Scheme: scheme}
-		r.captureNodeIdentity(ctx, cert, nodes)
-		if r.readNodeIdentity(ctx, cert) != nil {
-			t.Fatal("expected nil snapshot")
-		}
-		if got := r.maybeArchive(ctx, cert); got != 0 {
-			t.Fatalf("maybeArchive with Archive=nil = %v, want 0", got)
-		}
-	})
-
-	t.Run("foreign ConfigMap is not adopted", func(t *testing.T) {
-		cert := archiveTestCertification(archiveTestInput{})
-		foreign := &corev1.ConfigMap{}
-		foreign.Name, foreign.Namespace = "node-identity-"+archiveTestCertName, testNS
-		foreign.Data = map[string]string{"owner": "someone-else"}
-		r, c := newReconciler(cert, foreign)
-		r.captureNodeIdentity(ctx, cert, nodes)
-		fresh := &nvcrev1alpha1.Certification{}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(cert), fresh); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := fresh.Annotations[AnnotationNodeIdentityRef]; ok {
-			t.Fatal("must not reference a ConfigMap it does not own")
-		}
-		cm := &corev1.ConfigMap{}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(foreign), cm); err != nil {
-			t.Fatal(err)
-		}
-		if cm.Data["owner"] != "someone-else" || len(cm.BinaryData) != 0 {
-			t.Fatal("foreign ConfigMap was modified")
-		}
-	})
-
-	t.Run("reconcile result is never an error", func(t *testing.T) {
-		// A Certification that is terminal with a store that always fails must
-		// still produce a clean Result with a requeue, never an error.
-		in := archiveTestInput{Terminal: nvcrev1alpha1.CertificationSucceeded}
-		cert := archiveTestCertification(in)
-		r, _ := newReconciler(cert)
-		r.Archive.Destinations["d"].Store.(*archive.MemoryStore).FailNext(10, archiveFailure("transient"))
-		res, err := r.reconcileWorkflows(ctx, cert)
-		if err != nil {
-			t.Fatalf("reconcileWorkflows returned %v", err)
-		}
-		if res.RequeueAfter != archive.Backoff(1) {
-			t.Fatalf("RequeueAfter = %v, want %v", res.RequeueAfter, archive.Backoff(1))
-		}
-		_ = ctrl.Result{}
-	})
 }

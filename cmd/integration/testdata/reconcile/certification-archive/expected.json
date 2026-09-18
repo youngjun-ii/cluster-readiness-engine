@@ -7,9 +7,9 @@
       "namespace": "default",
       "annotations": {
         "nvcre.nvidia.com/archive-attempts": "1",
+        "nvcre.nvidia.com/archive-destination": "gs://nvcre-results/runs",
         "nvcre.nvidia.com/archive-state": "Succeeded",
-        "nvcre.nvidia.com/archive-uri": "gs://nvcre-results/runs/v=1/cluster=envtest/date=DATE/run=UID/record.json",
-        "nvcre.nvidia.com/node-identity-ref": "node-identity-test-cert-archive"
+        "nvcre.nvidia.com/archive-uri": "gs://nvcre-results/runs/v=1/cluster=envtest/date=DATE/run=UID/record.json"
       },
       "finalizers": [
         "nvcre.nvidia.com/certification-finalizer"
@@ -76,8 +76,7 @@
     }
   },
   "archive": {
-    "dev": [],
-    "prod": [
+    "nvcre-results": [
       {
         "uri": "gs://nvcre-results/runs/v=1/cluster=envtest/date=DATE/run=UID/record.json",
         "contentType": "application/json",
@@ -115,12 +114,10 @@
         "nodes": [
           {
             "name": "archive-node-01",
-            "identity": "system-only",
             "outcome": "Passed"
           },
           {
             "name": "archive-node-02",
-            "identity": "system-only",
             "outcome": "Passed"
           }
         ],
@@ -134,7 +131,6 @@
                 "name": "group-0",
                 "phase": "Succeeded",
                 "jobOutcome": "SUCCEEDED",
-                "groupOutcome": "SUCCEEDED",
                 "measurements": [
                   "bandwidth:true"
                 ],

@@ -48,12 +48,8 @@
     "default": ""
   },
   {
-    "name": "results-archive-default",
-    "default": ""
-  },
-  {
-    "name": "results-archive-destination",
-    "default": "[]"
+    "name": "results-archive-enabled",
+    "default": "false"
   },
   {
     "name": "results-archive-include-failure-log",

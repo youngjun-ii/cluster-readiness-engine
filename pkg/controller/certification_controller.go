@@ -24,6 +24,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/evidence"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/catalog"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/naming"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/platform"
@@ -185,7 +186,7 @@ func (r *CertificationReconciler) initializeCategoryStatuses(ctx context.Context
 		return ctrl.Result{}, fmt.Errorf("certification has no categories")
 	}
 	firstCategory := certification.Spec.Categories[0]
-	workflowName, nodes, err := r.createWorkflowForCategory(ctx, certification, firstCategory)
+	workflowName, err := r.createWorkflowForCategory(ctx, certification, firstCategory)
 	if err != nil {
 		if errors.Is(err, errNoNodesMatch) && time.Since(certification.CreationTimestamp.Time) < nodeDiscoveryTimeout {
 			log.Info("No nodes match target yet, will retry", "domain", firstCategory.Domain, "variant", firstCategory.Variant)
@@ -215,10 +216,6 @@ func (r *CertificationReconciler) initializeCategoryStatuses(ctx context.Context
 		}
 		return ctrl.Result{}, err
 	}
-
-	// The run has started: snapshot the nodes' identity for the results
-	// archive before any of them can be replaced. Best-effort; see captureNodeIdentity.
-	r.captureNodeIdentity(ctx, certification, nodes)
 
 	categoryStatuses[0].Status = categoryStatusInProgress
 	categoryStatuses[0].WorkflowRef = &nvcrev1alpha1.WorkflowReference{
@@ -267,7 +264,7 @@ func (r *CertificationReconciler) processNextCategory(ctx context.Context, certi
 		return ctrl.Result{}, fmt.Errorf("category index %d out of range (spec has %d categories)", activeIdx, len(certification.Spec.Categories))
 	}
 	category := certification.Spec.Categories[activeIdx]
-	workflowName, _, err := r.createWorkflowForCategory(ctx, certification, category)
+	workflowName, err := r.createWorkflowForCategory(ctx, certification, category)
 	if err != nil {
 		if errors.Is(err, errNoNodesMatch) && time.Since(certification.CreationTimestamp.Time) < nodeDiscoveryTimeout {
 			log.Info("No nodes match target yet, will retry", "domain", category.Domain, "variant", category.Variant)
@@ -405,12 +402,12 @@ func (r *CertificationReconciler) finalizeCertification(ctx context.Context, cer
 //
 // The discovered nodes are returned alongside the name so the caller that
 // starts the run can snapshot their identity for the results archive.
-func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context, certification *nvcrev1alpha1.Certification, category nvcrev1alpha1.CertificateCategory) (string, []corev1.Node, error) {
+func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context, certification *nvcrev1alpha1.Certification, category nvcrev1alpha1.CertificateCategory) (string, error) {
 	log := logf.FromContext(ctx)
 
 	entry := catalog.Lookup(category.Domain, category.Variant)
 	if entry == nil {
-		return "", nil, fmt.Errorf("unknown certification category: %s/%s", category.Domain, category.Variant)
+		return "", fmt.Errorf("unknown certification category: %s/%s", category.Domain, category.Variant)
 	}
 
 	// --- 1. Discover nodes (shared context for nodesPerJob + overlays) ---
@@ -419,10 +416,10 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 	// from, so recording them twice would only risk the two disagreeing.
 	nodes, _, err := discoverTargetNodes(ctx, r.Client, &certification.Spec.Target)
 	if err != nil {
-		return "", nil, fmt.Errorf("discovering target nodes: %w", err)
+		return "", fmt.Errorf("discovering target nodes: %w", err)
 	}
 	if len(nodes) == 0 {
-		return "", nil, fmt.Errorf("%s/%s: %w", category.Domain, category.Variant, errNoNodesMatch)
+		return "", fmt.Errorf("%s/%s: %w", category.Domain, category.Variant, errNoNodesMatch)
 	}
 
 	// Best-effort platform + GPU detection for overlay context.
@@ -439,7 +436,7 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 		archNodes = nodes
 	}
 	if gpuArch == "" {
-		return "", nil, fmt.Errorf(
+		return "", fmt.Errorf(
 			"cannot determine GPU architecture from target nodeSelector" +
 				" (nvidia.com/gpu.product label is required)",
 		)
@@ -460,12 +457,12 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 
 	capableNodes, err := dropUnderCapacityNodes(archNodes, category, gpusPerNode)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 
 	nodesPerJob, err := resolveNodesPerJob(capableNodes, category, opts, entry, gpusPerNode, gpuArch)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 
 	enableMNNVL := derefBool(opts.EnableMNNVL)
@@ -503,7 +500,7 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 		MeasurementTimeout: opts.MeasurementTimeout,
 	})
 	if buildErr != nil {
-		return "", nil, fmt.Errorf("building workflow for %s/%s: %w", category.Domain, category.Variant, buildErr)
+		return "", fmt.Errorf("building workflow for %s/%s: %w", category.Domain, category.Variant, buildErr)
 	}
 
 	// --- 4. Apply overlays (best-effort, prune applied) ---
@@ -514,7 +511,7 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 	octx := BuildOverrideContext(&workflowSpec, orch, nodes)
 	applied, overrideErr := ApplyOverridesWithTracking(&workflowSpec, octx)
 	if overrideErr != nil {
-		return "", nil, fmt.Errorf("applying overrides for %s/%s: %w", category.Domain, category.Variant, overrideErr)
+		return "", fmt.Errorf("applying overrides for %s/%s: %w", category.Domain, category.Variant, overrideErr)
 	}
 	pruneAppliedOverrides(&workflowSpec, applied)
 	pruneUnmatchableOverrides(&workflowSpec, octx)
@@ -523,13 +520,13 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 	// or a platform override put in schedulerName.
 	if err := platform.ApplyGangSchedulerToDependencies(
 		workflowSpec.Dependencies, certification.Spec.GangScheduler); err != nil {
-		return "", nil, fmt.Errorf("applying gang scheduler for %s/%s: %w", category.Domain, category.Variant, err)
+		return "", fmt.Errorf("applying gang scheduler for %s/%s: %w", category.Domain, category.Variant, err)
 	}
 	// Priority is applied last for the same reason, and independently of the
 	// gang scheduler: the default scheduler honours pod priority too.
 	if err := platform.ApplyPriorityClassToDependencies(
 		workflowSpec.Dependencies, certification.Spec.PriorityClassName); err != nil {
-		return "", nil, fmt.Errorf("applying priority class for %s/%s: %w", category.Domain, category.Variant, err)
+		return "", fmt.Errorf("applying priority class for %s/%s: %w", category.Domain, category.Variant, err)
 	}
 
 	if len(applied) > 0 || len(workflowSpec.Overrides) > 0 {
@@ -560,9 +557,15 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 			annotationRequestedTestScale: opts.TestScale,
 		}
 	}
+	if r.archiveEnabled() && r.selectArchiveDestination(certification).destination != nil {
+		if workflow.Annotations == nil {
+			workflow.Annotations = map[string]string{}
+		}
+		workflow.Annotations[evidence.AnnotationVersion] = evidence.Version
+	}
 
 	if err := controllerutil.SetControllerReference(certification, workflow, r.Scheme); err != nil {
-		return "", nil, fmt.Errorf("failed to set owner reference on Workflow: %w", err)
+		return "", fmt.Errorf("failed to set owner reference on Workflow: %w", err)
 	}
 
 	log.Info("Creating Workflow", "name", workflowName, "domain", category.Domain, "variant", category.Variant)
@@ -574,17 +577,17 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 			// name is never recorded — the finalizer would otherwise delete it.
 			existing := &nvcrev1alpha1.Workflow{}
 			if getErr := r.Get(ctx, client.ObjectKeyFromObject(workflow), existing); getErr != nil {
-				return "", nil, fmt.Errorf("failed to get existing Workflow %s: %w", workflowName, getErr)
+				return "", fmt.Errorf("failed to get existing Workflow %s: %w", workflowName, getErr)
 			}
 			if !metav1.IsControlledBy(existing, certification) {
 				// A foreign holder that is already terminating (e.g. the child of
 				// a same-named Certification that was just deleted) releases the
 				// name shortly: retry with backoff instead of failing terminally.
 				if !existing.DeletionTimestamp.IsZero() {
-					return "", nil, fmt.Errorf("existing Workflow %q in namespace %q is being deleted; retrying",
+					return "", fmt.Errorf("existing Workflow %q in namespace %q is being deleted; retrying",
 						workflowName, certification.Namespace)
 				}
-				return "", nil, &nameCollisionError{
+				return "", &nameCollisionError{
 					Reason: ReasonWorkflowNameCollision,
 					Message: fmt.Sprintf("Workflow %q already exists in namespace %q and is not controlled by Certification %q; refusing to adopt it",
 						workflowName, certification.Namespace, certification.Name),
@@ -604,11 +607,11 @@ func (r *CertificationReconciler) createWorkflowForCategory(ctx context.Context,
 				fmt.Sprintf("Failed to create Workflow %s: %v", workflowName, err)); statusErr != nil {
 				log.Error(statusErr, "Failed to update Certification status after Workflow creation failure")
 			}
-			return "", nil, fmt.Errorf("failed to create Workflow %s: %w", workflowName, err)
+			return "", fmt.Errorf("failed to create Workflow %s: %w", workflowName, err)
 		}
 	}
 
-	return workflowName, nodes, nil
+	return workflowName, nil
 }
 
 // ResolveOptions merges per-category overrides with global defaults.
@@ -998,8 +1001,8 @@ func (r *CertificationReconciler) handleDeletion(ctx context.Context, certificat
 		}
 	}
 
-	if err := r.deleteNodeIdentity(ctx, certification); err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to delete node identity ConfigMap: %w", err)
+	if err := evidence.DeleteAll(ctx, r.Client, certification.Namespace, certification.UID); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to delete archive evidence ConfigMaps: %w", err)
 	}
 
 	log.Info("Removing finalizer from Certification")

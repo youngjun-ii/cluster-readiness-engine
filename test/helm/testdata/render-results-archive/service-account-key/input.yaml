@@ -4,6 +4,5 @@
 set:
   - resultsArchive.enabled=true
   - resultsArchive.clusterId=onprem-a
-  - resultsArchive.destinations.prod=gs://nvcre-results-prod/runs
   - resultsArchive.auth.mode=serviceAccountKey
   - resultsArchive.auth.serviceAccountKey.existingSecret=nvcre-gcs-writer

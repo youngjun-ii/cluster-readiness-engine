@@ -6,10 +6,11 @@ package archive
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"time"
+
+	"google.golang.org/api/googleapi"
 )
 
 // Kind classifies a store error into the handful of outcomes the controller
@@ -47,40 +48,22 @@ func (k Kind) Retryable() bool {
 	}
 }
 
-// HTTPError is a non-2xx response from the store.
-type HTTPError struct {
-	StatusCode int
-	Method     string
-	URL        string
-	Body       string
-}
-
-func (e *HTTPError) Error() string {
-	if e.Body != "" {
-		return fmt.Sprintf("%s %s: HTTP %d: %s", e.Method, e.URL, e.StatusCode, e.Body)
-	}
-	return fmt.Sprintf("%s %s: HTTP %d", e.Method, e.URL, e.StatusCode)
-}
-
-// Classify maps an error from Create or Stat to a Kind.
+// Classify maps an error from Create to a Kind.
 func Classify(err error) Kind {
 	if errors.Is(err, ErrAlreadyExists) {
 		return KindAlreadyExists
 	}
-	if errors.Is(err, ErrNotFound) {
-		return KindNotFound
-	}
-	if httpErr, ok := errors.AsType[*HTTPError](err); ok {
+	if httpErr, ok := errors.AsType[*googleapi.Error](err); ok {
 		switch {
-		case httpErr.StatusCode == http.StatusUnauthorized:
+		case httpErr.Code == http.StatusUnauthorized:
 			return KindUnauthenticated
-		case httpErr.StatusCode == http.StatusForbidden:
+		case httpErr.Code == http.StatusForbidden:
 			return KindForbidden
-		case httpErr.StatusCode == http.StatusNotFound:
+		case httpErr.Code == http.StatusNotFound:
 			return KindNotFound
-		case httpErr.StatusCode == http.StatusRequestTimeout,
-			httpErr.StatusCode == http.StatusTooManyRequests,
-			httpErr.StatusCode >= 500:
+		case httpErr.Code == http.StatusRequestTimeout,
+			httpErr.Code == http.StatusTooManyRequests,
+			httpErr.Code >= 500:
 			return KindTransient
 		default:
 			return KindInvalid

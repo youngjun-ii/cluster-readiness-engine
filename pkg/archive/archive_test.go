@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const destinationTestKey = "v=1/run=abc/record.json"
+
 // ParseDestination is the only place a gs:// URL from configuration is
 // interpreted, so the accepted and rejected shapes are pinned.
 func TestParseDestination(t *testing.T) {
@@ -27,33 +29,33 @@ func TestParseDestination(t *testing.T) {
 	}{
 		{
 			name:       "bucket and prefix",
-			raw:        "gs://nvcre-results/runs/prod",
-			key:        "v=1/run=abc/record.json",
-			want:       Destination{Bucket: "nvcre-results", Prefix: "runs/prod"},
-			wantString: "gs://nvcre-results/runs/prod",
-			wantKey:    "runs/prod/v=1/run=abc/record.json",
-			wantURI:    "gs://nvcre-results/runs/prod/v=1/run=abc/record.json",
+			raw:        "gs://" + testBucket + "/runs/prod",
+			key:        destinationTestKey,
+			want:       Destination{Bucket: testBucket, Prefix: "runs/prod"},
+			wantString: "gs://" + testBucket + "/runs/prod",
+			wantKey:    "runs/prod/" + destinationTestKey,
+			wantURI:    "gs://" + testBucket + "/runs/prod/" + destinationTestKey,
 		},
 		{
 			name:       "bucket only",
-			raw:        "gs://nvcre-results",
-			key:        "v=1/run=abc/record.json",
-			want:       Destination{Bucket: "nvcre-results"},
-			wantString: "gs://nvcre-results",
-			wantKey:    "v=1/run=abc/record.json",
-			wantURI:    "gs://nvcre-results/v=1/run=abc/record.json",
+			raw:        "gs://" + testBucket,
+			key:        destinationTestKey,
+			want:       Destination{Bucket: testBucket},
+			wantString: "gs://" + testBucket,
+			wantKey:    destinationTestKey,
+			wantURI:    "gs://" + testBucket + "/" + destinationTestKey,
 		},
 		{
 			name:       "trailing slash prefix",
-			raw:        "gs://nvcre-results/runs/",
-			key:        "/v=1/run=abc/record.json",
-			want:       Destination{Bucket: "nvcre-results", Prefix: "runs"},
-			wantString: "gs://nvcre-results/runs",
-			wantKey:    "runs/v=1/run=abc/record.json",
-			wantURI:    "gs://nvcre-results/runs/v=1/run=abc/record.json",
+			raw:        "gs://" + testBucket + "/runs/",
+			key:        "/" + destinationTestKey,
+			want:       Destination{Bucket: testBucket, Prefix: "runs"},
+			wantString: "gs://" + testBucket + "/runs",
+			wantKey:    "runs/" + destinationTestKey,
+			wantURI:    "gs://" + testBucket + "/runs/" + destinationTestKey,
 		},
 		{name: "empty bucket", raw: "gs:///runs", errContains: "has no bucket"},
-		{name: "no scheme", raw: "s3://nvcre-results/runs", errContains: "must start with gs://"},
+		{name: "no scheme", raw: "s3://" + testBucket + "/runs", errContains: "must start with gs://"},
 	}
 
 	for _, tt := range tests {
@@ -98,44 +100,35 @@ func TestBackoff(t *testing.T) {
 	}
 }
 
-// The fake honours the same contract as the real store: write-once, a
-// checksum on Stat, and injected failures consumed in order.
+// The fake honours the same contract as the real store: write-once, with
+// injected failures consumed in order.
 func TestMemoryStoreContract(t *testing.T) {
 	ctx := context.Background()
 	m := NewMemoryStore()
 
-	_, err := m.Stat(ctx, "k")
-	require.ErrorIs(t, err, ErrNotFound)
-
 	injected := errors.New("boom")
 	m.FailNext(2, injected)
-	_, err = m.Create(ctx, "k", []byte("a"), "text/plain")
+	err := m.Create(ctx, "k", []byte("a"), "text/plain")
 	require.ErrorIs(t, err, injected)
-	_, err = m.Create(ctx, "k", []byte("a"), "text/plain")
+	err = m.Create(ctx, "k", []byte("a"), "text/plain")
 	require.ErrorIs(t, err, injected)
 
-	info, err := m.Create(ctx, "k", []byte("a"), "text/plain")
+	err = m.Create(ctx, "k", []byte("a"), "text/plain")
 	require.NoError(t, err)
-	require.Equal(t, CRC32C([]byte("a")), info.CRC32C)
-	require.Equal(t, int64(1), info.Generation)
 
-	_, err = m.Create(ctx, "k", []byte("b"), "text/plain")
+	err = m.Create(ctx, "k", []byte("b"), "text/plain")
 	require.ErrorIs(t, err, ErrAlreadyExists)
 	body, ct, ok := m.Get("k")
 	require.True(t, ok)
 	require.Equal(t, []byte("a"), body, "write-once: the second body must not replace the first")
 	require.Equal(t, "text/plain", ct)
 
-	stat, err := m.Stat(ctx, "k")
-	require.NoError(t, err)
-	require.Equal(t, info, stat)
 	require.Equal(t, []string{"k"}, m.Keys())
 	require.Equal(t, 4, m.Creates())
 }
 
 func TestClassifyUnwrapped(t *testing.T) {
 	require.Equal(t, KindAlreadyExists, Classify(ErrAlreadyExists))
-	require.Equal(t, KindNotFound, Classify(ErrNotFound))
 	require.Equal(t, KindTransient, Classify(context.DeadlineExceeded))
 	require.Equal(t, KindTransient, Classify(errors.New("connection reset")))
 	require.True(t, KindTransient.Retryable())

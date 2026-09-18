@@ -7,32 +7,26 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/record"
-	"github.com/NVIDIA/cluster-readiness-engine/pkg/naming"
 )
 
 // Annotations that carry the results-archive state. The archive has
 // no CRD field in v1; these are the whole surface.
 const (
-	// AnnotationArchive set to "false" opts a run out of archiving.
-	AnnotationArchive = "nvcre.nvidia.com/archive"
-	// AnnotationArchiveDestination names one of the controller's configured
-	// destinations for this run.
+	// AnnotationArchiveDestination is the gs://bucket[/prefix] selected for
+	// this run. Its absence means the run is not archived.
 	AnnotationArchiveDestination = "nvcre.nvidia.com/archive-destination"
 	// AnnotationArchiveState is the controller-owned emit state.
 	AnnotationArchiveState = "nvcre.nvidia.com/archive-state"
@@ -43,9 +37,6 @@ const (
 	AnnotationArchiveAttempts = "nvcre.nvidia.com/archive-attempts"
 	// AnnotationArchiveError holds the last error, truncated.
 	AnnotationArchiveError = "nvcre.nvidia.com/archive-error"
-	// AnnotationNodeIdentityRef names the ConfigMap holding the node-identity
-	// snapshot captured when the target was first resolved.
-	AnnotationNodeIdentityRef = "nvcre.nvidia.com/node-identity-ref"
 )
 
 // Archive states.
@@ -53,47 +44,30 @@ const (
 	ArchiveStatePending       = "Pending"
 	ArchiveStateRetrying      = "Retrying"
 	ArchiveStateSucceeded     = "Succeeded"
-	ArchiveStateConflict      = "Conflict"
 	ArchiveStateMisconfigured = "Misconfigured"
-	ArchiveStateSkipped       = "Skipped"
 )
 
 // Archive event reasons.
 const (
 	ReasonArchived             = "Archived"
 	ReasonArchiveFailed        = "ArchiveFailed"
-	ReasonArchiveConflict      = "ArchiveConflict"
 	ReasonArchiveMisconfigured = "ArchiveMisconfigured"
 )
 
 const (
 	// archiveErrorMaxLen bounds the error annotation. The full error is logged.
 	archiveErrorMaxLen = 512
-	// nodeIdentityPrefix names the per-Certification identity ConfigMap. It
-	// is keyed by Certification name rather than UID so its name is knowable
-	// before the object exists; ownership is checked before it is reused.
-	nodeIdentityPrefix = "node-identity-"
 	// archiveDeletionAttemptTimeout bounds the one attempt handleDeletion
 	// makes. Cleanup must not wait on a slow bucket.
 	archiveDeletionAttemptTimeout = 30 * time.Second
-	// maxConfigMapNameLen is the DNS subdomain limit ConfigMap names follow.
-	maxConfigMapNameLen = 253
 )
-
-// ArchiveDestination is one configured place records can go.
-type ArchiveDestination struct {
-	Destination archive.Destination
-	Store       archive.Store
-}
 
 // ArchiveConfig enables the results archive. A nil *ArchiveConfig on the
 // reconciler disables it entirely and the terminal branch is unchanged.
 type ArchiveConfig struct {
-	// Destinations maps a name to a destination and its store.
-	Destinations map[string]ArchiveDestination
-	// Default is the destination used when a run names none. Empty means
-	// runs must opt in with the annotation.
-	Default string
+	// StoreForBucket returns a store backed by the shared Cloud Storage
+	// client. The bucket comes from the run's destination annotation.
+	StoreForBucket func(string) archive.Store
 	// ClusterID is recorded in every record and is part of the object key.
 	ClusterID string
 	// IncludeFailureLog copies Job failure log tails into the record.
@@ -102,55 +76,36 @@ type ArchiveConfig struct {
 	Provenance record.Provenance
 }
 
-// destinationNames returns the configured names, sorted, for messages.
-func (c *ArchiveConfig) destinationNames() []string {
-	names := make([]string, 0, len(c.Destinations))
-	for n := range c.Destinations {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
-}
-
 func (r *CertificationReconciler) archiveEnabled() bool {
-	return r.Archive != nil && len(r.Archive.Destinations) > 0
+	return r.Archive != nil && r.Archive.StoreForBucket != nil
 }
 
 // archiveSelection is the outcome of resolving which destination, if any, a
 // run archives to.
 type archiveSelection struct {
-	dest *ArchiveDestination
-	// skipped is set when the run opted out or named nothing and there is no
-	// default. Neither is an error.
+	destination *archive.Destination
+	store       archive.Store
+	// skipped is set when the run supplied no destination.
 	skipped bool
-	// optedOut distinguishes an explicit "false" (recorded as Skipped) from
-	// silence (nothing is written).
-	optedOut bool
-	// misconfigured is the message when the run named an unknown destination.
+	// misconfigured is the message when the annotation is not a gs:// URI.
 	misconfigured string
 }
 
-// selectArchiveDestination resolves, in order: the opt-out annotation, the
-// destination annotation, the configured default.
+// selectArchiveDestination parses the run-selected destination. The
+// controller validates it independently because callers can bypass nvcrectl.
 func (r *CertificationReconciler) selectArchiveDestination(cert *nvcrev1alpha1.Certification) archiveSelection {
-	ann := cert.GetAnnotations()
-	if strings.EqualFold(ann[AnnotationArchive], "false") {
-		return archiveSelection{skipped: true, optedOut: true}
-	}
-	name := ann[AnnotationArchiveDestination]
-	if name == "" {
-		name = r.Archive.Default
-	}
-	if name == "" {
+	raw := cert.GetAnnotations()[AnnotationArchiveDestination]
+	if raw == "" {
 		return archiveSelection{skipped: true}
 	}
-	dest, ok := r.Archive.Destinations[name]
-	if !ok {
-		return archiveSelection{misconfigured: fmt.Sprintf(
-			"archive destination %q is not configured; valid destinations: %s",
-			name, strings.Join(r.Archive.destinationNames(), ", "))}
+	destination, err := archive.ParseDestination(raw)
+	if err != nil {
+		return archiveSelection{misconfigured: err.Error()}
 	}
-	return archiveSelection{dest: &dest}
+	return archiveSelection{
+		destination: &destination,
+		store:       r.Archive.StoreForBucket(destination.Bucket),
+	}
 }
 
 // archiveObjectKey is the object name relative to the destination prefix.
@@ -165,7 +120,7 @@ func archiveObjectKey(clusterID string, terminalAt time.Time, uid string) string
 // isArchiveTerminalState reports whether the emit state machine is done.
 func isArchiveTerminalState(state string) bool {
 	switch state {
-	case ArchiveStateSucceeded, ArchiveStateConflict, ArchiveStateMisconfigured, ArchiveStateSkipped:
+	case ArchiveStateSucceeded, ArchiveStateMisconfigured:
 		return true
 	default:
 		return false
@@ -190,21 +145,19 @@ func (r *CertificationReconciler) maybeArchive(ctx context.Context, cert *nvcrev
 
 	sel := r.selectArchiveDestination(cert)
 	switch {
-	case sel.skipped && sel.optedOut:
-		// Annotation errors are logged inside; the next reconcile retries.
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{AnnotationArchiveState: ArchiveStateSkipped}, nil)
-		return 0
 	case sel.skipped:
 		return 0
 	case sel.misconfigured != "":
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
+		if err := r.setArchiveAnnotations(ctx, cert, map[string]string{
 			AnnotationArchiveState: ArchiveStateMisconfigured,
 			AnnotationArchiveError: truncateError(sel.misconfigured),
-		}, nil)
+		}, nil); err != nil {
+			return r.getRequeueInterval()
+		}
 		r.warnf(cert, ReasonArchiveMisconfigured, "%s", sel.misconfigured)
 		return 0
 	}
-	dest := sel.dest
+	destination := *sel.destination
 
 	// Stability: a Certification's terminal condition can revert while a child
 	// Workflow is still running (recoverIfWorkflowStillRunning). A List error
@@ -224,35 +177,39 @@ func (r *CertificationReconciler) maybeArchive(ctx context.Context, cert *nvcrev
 	}
 
 	rec, err := record.Build(ctx, r.Client, cert, record.Options{
-		ClusterID:         r.Archive.ClusterID,
-		IncludeFailureLog: r.Archive.IncludeFailureLog,
-		Provenance:        r.Archive.Provenance,
-		NodeIdentity:      r.readNodeIdentity(ctx, cert),
+		ClusterID:  r.Archive.ClusterID,
+		Provenance: r.Archive.Provenance,
 	})
 	if err != nil {
 		// Only a spec that cannot be marshalled reaches here, which the API
 		// server would have rejected. Record it and stop; retrying cannot help.
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
+		if patchErr := r.setArchiveAnnotations(ctx, cert, map[string]string{
 			AnnotationArchiveState: ArchiveStateMisconfigured,
 			AnnotationArchiveError: truncateError("building record: " + err.Error()),
-		}, nil)
+		}, nil); patchErr != nil {
+			return r.getRequeueInterval()
+		}
 		r.warnf(cert, ReasonArchiveFailed, "Cannot build results record: %v", err)
 		return 0
 	}
 	body, err := record.Marshal(rec)
 	if err != nil {
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
+		if patchErr := r.setArchiveAnnotations(ctx, cert, map[string]string{
 			AnnotationArchiveState: ArchiveStateMisconfigured,
 			AnnotationArchiveError: truncateError("encoding record: " + err.Error()),
-		}, nil)
+		}, nil); patchErr != nil {
+			return r.getRequeueInterval()
+		}
 		return 0
 	}
 
-	// Resolve the key once. Every later attempt reuses the recorded URI.
+	// Pin the exact URI before writing. A changed destination annotation is
+	// rejected on retries rather than silently routing the same run elsewhere.
+	rel := archiveObjectKey(r.Archive.ClusterID, terminalAt.Time, string(cert.UID))
+	expectedURI := destination.URI(rel)
 	uri := ann[AnnotationArchiveURI]
 	if uri == "" {
-		rel := archiveObjectKey(r.Archive.ClusterID, terminalAt.Time, string(cert.UID))
-		uri = dest.Destination.URI(rel)
+		uri = expectedURI
 		if err := r.setArchiveAnnotations(ctx, cert, map[string]string{
 			AnnotationArchiveURI:   uri,
 			AnnotationArchiveState: ArchiveStatePending,
@@ -260,14 +217,14 @@ func (r *CertificationReconciler) maybeArchive(ctx context.Context, cert *nvcrev
 			log.Error(err, "Cannot record archive URI; will retry")
 			return r.getRequeueInterval()
 		}
-	}
-	key, ok := objectKeyFromURI(uri, dest.Destination)
-	if !ok {
-		msg := fmt.Sprintf("recorded archive URI %q is not under destination %s", uri, dest.Destination)
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
+	} else if uri != expectedURI {
+		msg := fmt.Sprintf("recorded archive URI %q does not match destination %s", uri, destination)
+		if err := r.setArchiveAnnotations(ctx, cert, map[string]string{
 			AnnotationArchiveState: ArchiveStateMisconfigured,
 			AnnotationArchiveError: truncateError(msg),
-		}, nil)
+		}, nil); err != nil {
+			return r.getRequeueInterval()
+		}
 		r.warnf(cert, ReasonArchiveMisconfigured, "%s", msg)
 		return 0
 	}
@@ -276,19 +233,24 @@ func (r *CertificationReconciler) maybeArchive(ctx context.Context, cert *nvcrev
 	attempts++
 	attemptsStr := strconv.Itoa(attempts)
 
-	info, err := dest.Store.Create(ctx, key, body, record.ContentType)
+	err = sel.store.Create(ctx, destination.Key(rel), body, record.ContentType)
 	switch kind := archive.Classify(err); {
-	case err == nil:
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
+	case err == nil || kind == archive.KindAlreadyExists:
+		if patchErr := r.setArchiveAnnotations(ctx, cert, map[string]string{
 			AnnotationArchiveState:    ArchiveStateSucceeded,
 			AnnotationArchiveAttempts: attemptsStr,
-		}, []string{AnnotationArchiveError})
-		log.Info("Archived certification results", "uri", uri, "generation", info.Generation, "bytes", len(body))
-		r.normalf(cert, ReasonArchived, "Results archived to %s", uri)
+		}, []string{AnnotationArchiveError}); patchErr != nil {
+			log.Error(patchErr, "Cannot record successful archive write; will retry", "uri", uri)
+			return r.getRequeueInterval()
+		}
+		if kind == archive.KindAlreadyExists {
+			log.Info("Certification results already archived", "uri", uri)
+			r.normalf(cert, ReasonArchived, "Results already archived at %s", uri)
+		} else {
+			log.Info("Archived certification results", "uri", uri, "bytes", len(body))
+			r.normalf(cert, ReasonArchived, "Results archived to %s", uri)
+		}
 		return 0
-
-	case kind == archive.KindAlreadyExists:
-		return r.resolveArchiveDuplicate(ctx, cert, dest, key, uri, body, attemptsStr)
 
 	case kind.Retryable():
 		state := ArchiveStateRetrying
@@ -300,12 +262,14 @@ func (r *CertificationReconciler) maybeArchive(ctx context.Context, cert *nvcrev
 		}
 		prev := ann[AnnotationArchiveError]
 		msg := fmt.Sprintf("%s: %v", kind, err)
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
+		log.Error(err, "Archive write failed; will retry", "kind", kind, "attempt", attempts, "retryIn", delay)
+		if patchErr := r.setArchiveAnnotations(ctx, cert, map[string]string{
 			AnnotationArchiveState:    state,
 			AnnotationArchiveAttempts: attemptsStr,
 			AnnotationArchiveError:    truncateError(msg),
-		}, nil)
-		log.Error(err, "Archive write failed; will retry", "kind", kind, "attempt", attempts, "retryIn", delay)
+		}, nil); patchErr != nil {
+			return delay
+		}
 		// One Warning per distinct failure kind, not one per retry.
 		if !strings.HasPrefix(prev, string(kind)+":") {
 			r.warnf(cert, ReasonArchiveFailed, "Archive write to %s failed (%s): %v", uri, archiveHint(kind), err)
@@ -314,56 +278,15 @@ func (r *CertificationReconciler) maybeArchive(ctx context.Context, cert *nvcrev
 
 	default:
 		msg := fmt.Sprintf("%s: %v", kind, err)
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
+		log.Error(err, "Archive write rejected; not retrying", "kind", kind)
+		if patchErr := r.setArchiveAnnotations(ctx, cert, map[string]string{
 			AnnotationArchiveState:    ArchiveStateMisconfigured,
 			AnnotationArchiveAttempts: attemptsStr,
 			AnnotationArchiveError:    truncateError(msg),
-		}, nil)
-		log.Error(err, "Archive write rejected; not retrying", "kind", kind)
+		}, nil); patchErr != nil {
+			return r.getRequeueInterval()
+		}
 		r.warnf(cert, ReasonArchiveMisconfigured, "Archive write to %s rejected: %v", uri, err)
-		return 0
-	}
-}
-
-// resolveArchiveDuplicate decides what an existing object means. An earlier
-// attempt may have landed without its annotation write; the checksum tells
-// that apart from a foreign object. The controller never overwrites, and
-// never claims a success it cannot verify.
-func (r *CertificationReconciler) resolveArchiveDuplicate(
-	ctx context.Context, cert *nvcrev1alpha1.Certification, dest *ArchiveDestination,
-	key, uri string, body []byte, attempts string,
-) time.Duration {
-	log := logf.FromContext(ctx).WithName("archive")
-	info, err := dest.Store.Stat(ctx, key)
-	switch {
-	case err == nil && info.CRC32C == archive.CRC32C(body):
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
-			AnnotationArchiveState:    ArchiveStateSucceeded,
-			AnnotationArchiveAttempts: attempts,
-		}, []string{AnnotationArchiveError})
-		log.Info("Archive object already present with matching checksum", "uri", uri, "generation", info.Generation)
-		r.normalf(cert, ReasonArchived, "Results already archived at %s", uri)
-		return 0
-	case err == nil:
-		msg := fmt.Sprintf("object exists with a different checksum (existing crc32c %s, ours %s); not overwriting",
-			archive.EncodeCRC32C(info.CRC32C), archive.EncodeCRC32C(archive.CRC32C(body)))
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
-			AnnotationArchiveState:    ArchiveStateConflict,
-			AnnotationArchiveAttempts: attempts,
-			AnnotationArchiveError:    truncateError(msg),
-		}, nil)
-		log.Error(nil, "Archive object conflict", "uri", uri)
-		r.warnf(cert, ReasonArchiveConflict, "%s: %s", uri, msg)
-		return 0
-	default:
-		msg := fmt.Sprintf("object exists but could not be verified: %v", err)
-		_ = r.setArchiveAnnotations(ctx, cert, map[string]string{
-			AnnotationArchiveState:    ArchiveStateConflict,
-			AnnotationArchiveAttempts: attempts,
-			AnnotationArchiveError:    truncateError(msg),
-		}, nil)
-		log.Error(err, "Archive object exists and cannot be verified", "uri", uri)
-		r.warnf(cert, ReasonArchiveConflict, "%s: %s (the identity needs storage.objects.get to compare checksums)", uri, msg)
 		return 0
 	}
 }
@@ -405,16 +328,6 @@ func (r *CertificationReconciler) workflowsStable(ctx context.Context, cert *nvc
 	return true, nil
 }
 
-// objectKeyFromURI recovers the in-bucket object name from a recorded URI.
-func objectKeyFromURI(uri string, dest archive.Destination) (string, bool) {
-	prefix := "gs://" + dest.Bucket + "/"
-	if !strings.HasPrefix(uri, prefix) {
-		return "", false
-	}
-	key := strings.TrimPrefix(uri, prefix)
-	return key, key != ""
-}
-
 // setArchiveAnnotations patches the archive annotations with a merge patch,
 // so it never conflicts with a concurrent status write, and updates cert in
 // place so a following Update (finalizer removal) carries the new version.
@@ -450,110 +363,6 @@ func (r *CertificationReconciler) normalf(obj client.Object, reason, messageFmt 
 	if r.Recorder != nil {
 		r.Recorder.Eventf(obj, nil, corev1.EventTypeNormal, reason, reason, messageFmt, args...)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Node identity capture
-// ---------------------------------------------------------------------------
-
-// nodeIdentityConfigMapName is the identity ConfigMap for a Certification.
-func nodeIdentityConfigMapName(cert *nvcrev1alpha1.Certification) string {
-	return naming.Truncate(nodeIdentityPrefix+cert.Name, maxConfigMapNameLen)
-}
-
-// captureNodeIdentity snapshots the discovered nodes into a ConfigMap owned
-// by the Certification and records its name. It runs once, when the first
-// Workflow is created, and only for runs that will be archived. Any failure
-// is logged and forgotten: the record falls back to live Node reads with a
-// gap, and the run itself is never affected.
-func (r *CertificationReconciler) captureNodeIdentity(ctx context.Context, cert *nvcrev1alpha1.Certification, nodes []corev1.Node) {
-	if !r.archiveEnabled() || cert.GetAnnotations()[AnnotationNodeIdentityRef] != "" {
-		return
-	}
-	if sel := r.selectArchiveDestination(cert); sel.dest == nil {
-		return
-	}
-	log := logf.FromContext(ctx).WithName("archive")
-
-	data, err := record.EncodeNodeIdentity(record.CaptureNodeIdentity(nodes))
-	if err != nil {
-		log.Error(err, "Cannot encode node identity snapshot")
-		return
-	}
-	cm := &corev1.ConfigMap{}
-	cm.Name = nodeIdentityConfigMapName(cert)
-	cm.Namespace = cert.Namespace
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
-		// An existing object comes back from the Get with a resourceVersion;
-		// a foreign holder of the name is left exactly as it is.
-		if cm.ResourceVersion != "" && !metav1.IsControlledBy(cm, cert) {
-			return fmt.Errorf("ConfigMap %s exists and is not controlled by this Certification", cm.Name)
-		}
-		if err := controllerutil.SetControllerReference(cert, cm, r.Scheme); err != nil {
-			return err
-		}
-		if cm.Labels == nil {
-			cm.Labels = map[string]string{}
-		}
-		cm.Labels[labelManagedBy] = managedByValue
-		cm.Labels[labelCertification] = cert.Name
-		cm.BinaryData = map[string][]byte{record.NodeIdentityConfigMapKey: data}
-		return nil
-	})
-	if err != nil {
-		log.Error(err, "Cannot write node identity snapshot", "configMap", cm.Name)
-		return
-	}
-	if err := r.setArchiveAnnotations(ctx, cert, map[string]string{AnnotationNodeIdentityRef: cm.Name}, nil); err != nil {
-		return
-	}
-	log.Info("Captured node identity for archive", "configMap", cm.Name, "nodes", len(nodes))
-}
-
-// readNodeIdentity returns the captured snapshot, or nil when there is none.
-func (r *CertificationReconciler) readNodeIdentity(ctx context.Context, cert *nvcrev1alpha1.Certification) []record.NodeIdentity {
-	name := cert.GetAnnotations()[AnnotationNodeIdentityRef]
-	if name == "" {
-		return nil
-	}
-	cm := &corev1.ConfigMap{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: cert.Namespace, Name: name}, cm); err != nil {
-		logf.FromContext(ctx).Error(err, "Cannot read node identity snapshot", "configMap", name)
-		return nil
-	}
-	ids, err := record.DecodeNodeIdentity(cm.BinaryData[record.NodeIdentityConfigMapKey])
-	if err != nil {
-		logf.FromContext(ctx).Error(err, "Cannot decode node identity snapshot", "configMap", name)
-		return nil
-	}
-	if ids == nil {
-		ids = []record.NodeIdentity{}
-	}
-	return ids
-}
-
-// deleteNodeIdentity removes the snapshot ConfigMap. envtest has no garbage
-// collector, and in production this only shortens the window before the
-// owner reference would have done it.
-func (r *CertificationReconciler) deleteNodeIdentity(ctx context.Context, cert *nvcrev1alpha1.Certification) error {
-	name := cert.GetAnnotations()[AnnotationNodeIdentityRef]
-	if name == "" {
-		return nil
-	}
-	cm := &corev1.ConfigMap{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: cert.Namespace, Name: name}, cm); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return err
-	}
-	if !metav1.IsControlledBy(cm, cert) {
-		return nil
-	}
-	if err := r.Delete(ctx, cm, client.Preconditions{UID: &cm.UID}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
-		return err
-	}
-	return nil
 }
 
 // archiveOnDeletion makes the one bounded attempt handleDeletion allows

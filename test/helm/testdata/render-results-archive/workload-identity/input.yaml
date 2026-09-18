@@ -1,9 +1,6 @@
 # Enabled with Application Default Credentials (Workload Identity on GKE):
-# flags only, no env, no mount. Destination flags render in name order.
+# flags only, no env, no mount. Each run supplies its destination.
 set:
   - resultsArchive.enabled=true
   - resultsArchive.clusterId=cluster-a
-  - resultsArchive.default=prod
-  - resultsArchive.destinations.prod=gs://nvcre-results-prod/runs
-  - resultsArchive.destinations.dev=gs://nvcre-results-dev
   - resultsArchive.includeFailureLog=true

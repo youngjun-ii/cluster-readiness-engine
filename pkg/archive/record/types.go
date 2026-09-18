@@ -34,11 +34,6 @@ const (
 	Kind = "CertificationResult"
 	// ContentType is the media type the record is stored as.
 	ContentType = "application/json"
-
-	// ReductionPolicy names how per-attempt node verdicts collapse into one
-	// per-node outcome for the run: only the final iteration counts, and a
-	// Failed verdict in any category wins over Passed.
-	ReductionPolicy = "final-iteration-any-failed"
 )
 
 // Verdict status values.
@@ -49,12 +44,11 @@ const (
 	VerdictUnknown    = "UNKNOWN"
 )
 
-// Outcome values shared by jobOutcome and groupOutcome.
+// Outcome values used by jobOutcome.
 const (
 	OutcomeSucceeded      = "SUCCEEDED"
 	OutcomeFailed         = "FAILED"
 	OutcomeHardwareFailed = "HARDWARE_FAILED"
-	OutcomeInconclusive   = "INCONCLUSIVE"
 	OutcomeUnknown        = "UNKNOWN"
 )
 
@@ -78,26 +72,12 @@ const (
 	CompletenessComplete = "complete"
 	CompletenessPartial  = "partial"
 
-	GapDiagnoseMultiRound       = "diagnose-multi-round"
-	GapRetriedAttemptsMissing   = "retried-attempts-missing"
-	GapIterationEvidenceMissing = "iteration-evidence-missing"
-	GapJobDeleted               = "job-deleted"
-	GapWorkflowMissing          = "workflow-missing"
-	GapNodeIdentityNotCaptured  = "node-identity-not-captured"
-	GapFailedNodesUnreadable    = "failed-nodes-unreadable"
-	GapMeasurementsUnlisted     = "measurements-unlisted"
-	GapJobsUnlisted             = "jobs-unlisted"
-	GapNodeVerdictReasonUnknown = "node-verdict-reason-unknown"
-	GapGroupNotRunAtTerminal    = "group-not-run"
-	GapCategoryNeverStarted     = "category-never-started"
-	GapNodeIdentityReadFailed   = "node-identity-read-failed"
-)
-
-// Identity completeness values for nodes.
-const (
-	IdentitySystemOnly     = "system-only"
-	IdentityKubernetesOnly = "kubernetes-only"
-	IdentityHostnameOnly   = "hostname-only"
+	GapWorkflowMissing       = "workflow-missing"
+	GapNodeIdentityMissing   = "node-identity-missing"
+	GapCategoryNeverStarted  = "category-never-started"
+	GapEvidenceMissing       = "archive-evidence-missing"
+	GapEvidenceCorrupt       = "archive-evidence-corrupt"
+	GapMeasurementIncomplete = "measurement-incomplete"
 )
 
 // Record is the archived document.
@@ -126,17 +106,15 @@ type Run struct {
 	// CertificationSpec is the spec verbatim. It is immutable after
 	// creation, so this is exactly what was asked for.
 	CertificationSpec json.RawMessage `json:"certificationSpec"`
-	SpecSHA256        string          `json:"specSha256"`
 }
 
 // Verdict is the run-level outcome with the coverage denominator that
 // INCOMPLETE needs to mean anything.
 type Verdict struct {
-	Status          string   `json:"status"`
-	Reason          string   `json:"reason"`
-	Message         string   `json:"message,omitempty"`
-	ReductionPolicy string   `json:"reductionPolicy"`
-	Coverage        Coverage `json:"coverage"`
+	Status   string   `json:"status"`
+	Reason   string   `json:"reason"`
+	Message  string   `json:"message,omitempty"`
+	Coverage Coverage `json:"coverage"`
 }
 
 // Coverage counts nodes by how the run treated them.
@@ -192,17 +170,15 @@ type WorkloadImage struct {
 type Node struct {
 	// ID is the most stable identity available: systemUUID, then the Node
 	// object's UID, then the hostname.
-	ID                   string            `json:"id"`
-	HostnameAlias        string            `json:"hostnameAlias"`
-	KubernetesUID        string            `json:"kubernetesUid,omitempty"`
-	SystemUUID           string            `json:"systemUuid,omitempty"`
-	GPUUUIDs             []string          `json:"gpuUuids"`
-	IdentityCompleteness string            `json:"identityCompleteness"`
-	ProviderID           string            `json:"providerId,omitempty"`
-	GPU                  NodeGPU           `json:"gpu"`
-	Labels               map[string]string `json:"labels"`
-	Outcome              string            `json:"outcome"`
-	Reasons              []NodeReason      `json:"reasons"`
+	ID            string            `json:"id"`
+	HostnameAlias string            `json:"hostnameAlias"`
+	KubernetesUID string            `json:"kubernetesUid,omitempty"`
+	SystemUUID    string            `json:"systemUuid,omitempty"`
+	ProviderID    string            `json:"providerId,omitempty"`
+	GPU           NodeGPU           `json:"gpu"`
+	Labels        map[string]string `json:"labels"`
+	Outcome       string            `json:"outcome"`
+	Reasons       []NodeReason      `json:"reasons"`
 }
 
 // NodeGPU is what the Node object said about its GPUs.
@@ -279,13 +255,11 @@ type Group struct {
 	Attempts []Attempt `json:"attempts"`
 }
 
-// Attempt is one Job run for a group. v1 records exactly one per group: the
-// last one, because earlier attempts' Jobs are deleted on retry.
+// Attempt is one immutable Job run for a group, including retries that have
+// already been deleted from the live cluster.
 type Attempt struct {
-	ID                   string                `json:"id"`
 	Index                int                   `json:"index"`
 	JobName              string                `json:"jobName,omitempty"`
-	JobFound             bool                  `json:"jobFound"`
 	StartTime            *metav1.Time          `json:"startTime"`
 	CompletionTime       *metav1.Time          `json:"completionTime"`
 	WorkloadStartTime    *metav1.Time          `json:"workloadStartTime"`
@@ -294,7 +268,6 @@ type Attempt struct {
 	JobOutcomeReason     string                `json:"jobOutcomeReason,omitempty"`
 	JobOutcomeMessage    string                `json:"jobOutcomeMessage,omitempty"`
 	ValidationFailed     *bool                 `json:"validationFailed"`
-	GroupOutcome         string                `json:"groupOutcome"`
 	Measurements         []Measurement         `json:"measurements"`
 	ThresholdEvaluations []ThresholdEvaluation `json:"thresholdEvaluations"`
 	NodeVerdicts         []NodeVerdict         `json:"nodeVerdicts"`
@@ -305,24 +278,14 @@ type Attempt struct {
 // at emit time. Frozen is its Complete condition; a false value is a fact
 // about the measurement, not a defect in the record.
 type Measurement struct {
-	Kind            string            `json:"kind"`
-	Name            string            `json:"name"`
-	LogProfile      string            `json:"logProfile,omitempty"`
-	Frozen          bool              `json:"frozen"`
-	FreezeCondition *ConditionSummary `json:"freezeCondition"`
-	StartTime       *metav1.Time      `json:"startTime"`
-	CompletionTime  *metav1.Time      `json:"completionTime"`
-	Bandwidth       *BandwidthData    `json:"bandwidth,omitempty"`
-	Goodput         *GoodputData      `json:"goodput,omitempty"`
-}
-
-// ConditionSummary is a metav1.Condition without observedGeneration.
-type ConditionSummary struct {
-	Type               string       `json:"type"`
-	Status             string       `json:"status"`
-	Reason             string       `json:"reason,omitempty"`
-	Message            string       `json:"message,omitempty"`
-	LastTransitionTime *metav1.Time `json:"lastTransitionTime"`
+	Kind           string         `json:"kind"`
+	Name           string         `json:"name"`
+	LogProfile     string         `json:"logProfile,omitempty"`
+	Frozen         bool           `json:"frozen"`
+	StartTime      *metav1.Time   `json:"startTime"`
+	CompletionTime *metav1.Time   `json:"completionTime"`
+	Bandwidth      *BandwidthData `json:"bandwidth,omitempty"`
+	Goodput        *GoodputData   `json:"goodput,omitempty"`
 }
 
 // BandwidthData is the whole size sweep, not the peak row the report keeps.
@@ -347,12 +310,10 @@ type GoodputData struct {
 	HighestStep           int    `json:"highestStep"`
 }
 
-// ThresholdEvaluation is one threshold from the Job spec, re-evaluated against
-// the measurement values the record carries. Passed is null when there was
-// nothing to evaluate against.
+// ThresholdEvaluation is one frozen threshold decision from the Job lifecycle.
+// Passed is null when there was nothing to evaluate against.
 type ThresholdEvaluation struct {
 	Metric        string   `json:"metric"`
-	Expression    string   `json:"expression"`
 	MeasuredValue *float64 `json:"measuredValue"`
 	Passed        *bool    `json:"passed"`
 	Reason        string   `json:"reason,omitempty"`
@@ -389,9 +350,8 @@ type Completeness struct {
 
 // Gap is one field-scoped hole in the evidence.
 type Gap struct {
-	Scope                 string   `json:"scope"`
-	Code                  string   `json:"code"`
-	Message               string   `json:"message"`
-	MissingAttemptIndexes []int    `json:"missingAttemptIndexes,omitempty"`
-	AffectedFields        []string `json:"affectedFields"`
+	Scope          string   `json:"scope"`
+	Code           string   `json:"code"`
+	Message        string   `json:"message"`
+	AffectedFields []string `json:"affectedFields"`
 }

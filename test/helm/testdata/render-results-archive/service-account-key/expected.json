@@ -1,6 +1,6 @@
 {
   "args": [
-    "--results-archive-destination=prod=gs://nvcre-results-prod/runs",
+    "--results-archive-enabled=true",
     "--results-archive-cluster-id=onprem-a"
   ],
   "env": [

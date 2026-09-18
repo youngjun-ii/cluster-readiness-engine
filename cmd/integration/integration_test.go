@@ -43,6 +43,7 @@ import (
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/evidence"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/record"
 	_ "github.com/NVIDIA/cluster-readiness-engine/pkg/catalog"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/controller"
@@ -90,6 +91,9 @@ func TestIntegration(t *testing.T) {
 
 		// Create objects manually (SetupTest has a bug with status updates).
 		objs := createTestObjects(tt, suite.Client, tc)
+		if cfg.Archive != nil {
+			seedArchiveEvidence(tt, suite.Client, objs)
+		}
 
 		fakeFetcher := buildFakeLogFetcher(tc)
 		archiveCfg, archiveStores := buildFakeArchive(cfg.Archive)
@@ -259,6 +263,118 @@ func createTestObjects(t *testing.T, c client.Client, tc *testutil.TestCase) []c
 	return created
 }
 
+// seedArchiveEvidence adapts the one retained terminal archive fixture to the
+// private journal boundary. Lifecycle capture itself is covered by controller
+// tests; this integration case continues to pin terminal delivery and record
+// projection without reviving cluster-state reconstruction in production.
+func seedArchiveEvidence(t *testing.T, c client.Client, objects []client.Object) {
+	t.Helper()
+	ctx := context.Background()
+	for _, object := range objects {
+		inputCert, ok := object.(*nvcrev1alpha1.Certification)
+		if !ok || inputCert.Annotations[controller.AnnotationArchiveDestination] == "" {
+			continue
+		}
+		var cert nvcrev1alpha1.Certification
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(inputCert), &cert))
+		owner := metav1.OwnerReference{
+			APIVersion: nvcrev1alpha1.GroupVersion.String(), Kind: "Certification",
+			Name: cert.Name, UID: cert.UID,
+		}
+		ci := evidence.ObjectIdentity{Name: cert.Name, UID: cert.UID}
+		for _, category := range cert.Status.CategoryStatuses {
+			if category.WorkflowRef == nil {
+				continue
+			}
+			var workflow nvcrev1alpha1.Workflow
+			require.NoError(t, c.Get(ctx, client.ObjectKey{
+				Namespace: cert.Namespace, Name: category.WorkflowRef.Name,
+			}, &workflow))
+			wi := evidence.ObjectIdentity{Name: workflow.Name, UID: workflow.UID}
+			var nodes corev1.NodeList
+			require.NoError(t, c.List(ctx, &nodes, client.MatchingLabels(cert.Spec.Target.NodeSelector)))
+			discovery := evidence.Discovery{Version: evidence.Version, Certification: ci, Workflow: wi}
+			for i := range nodes.Items {
+				n := &nodes.Items[i]
+				discovery.Nodes = append(discovery.Nodes, evidence.NodeIdentity{
+					Name: n.Name, KubernetesUID: string(n.UID), SystemUUID: n.Status.NodeInfo.SystemUUID,
+					ProviderID: n.Spec.ProviderID, GPUProduct: n.Labels["nvidia.com/gpu.product"],
+				})
+			}
+			require.NoError(t, evidence.Create(
+				ctx, c, cert.Namespace, evidence.KindDiscovery, ci, wi, evidence.ObjectIdentity{}, owner, discovery,
+			))
+			if workflow.Status.Orchestration == nil {
+				continue
+			}
+			for _, group := range workflow.Status.Orchestration.Groups {
+				if group.JobRef == nil {
+					continue
+				}
+				var job nvcrev1alpha1.Job
+				require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: cert.Namespace, Name: group.JobRef.Name}, &job))
+				outcome, reason, message := record.OutcomeUnknown, "", ""
+				var completed *metav1.Time
+				terminalTypes := []struct{ condition, outcome string }{
+					{nvcrev1alpha1.JobFailed, record.OutcomeFailed},
+					{nvcrev1alpha1.JobHardwareFailed, record.OutcomeHardwareFailed},
+					{nvcrev1alpha1.JobSucceeded, record.OutcomeSucceeded},
+				}
+				for _, typ := range terminalTypes {
+					condition := apimeta.FindStatusCondition(job.Status.Conditions, typ.condition)
+					if condition != nil && condition.Status == metav1.ConditionTrue {
+						outcome, reason, message = typ.outcome, condition.Reason, condition.Message
+						at := condition.LastTransitionTime
+						completed = &at
+						break
+					}
+				}
+				attempt := evidence.Attempt{
+					Version: evidence.Version, Certification: ci, Workflow: wi,
+					Job:       evidence.ObjectIdentity{Name: job.Name, UID: job.UID},
+					Iteration: workflow.Status.Orchestration.CurrentIteration, Retry: group.Retries,
+					Group: evidence.Group{
+						Name: group.Name, Nodes: group.Nodes, Domains: group.Domains, Overflow: group.Overflow,
+					},
+					StartTime: group.StartTime, CompletionTime: completed,
+					WorkloadStartTime: job.Status.WorkloadStartTime, RestartCount: job.Status.RestartCount,
+					Outcome: outcome, Reason: reason, Message: message, FailedNodes: job.Status.FailedNodes,
+				}
+				var measurements nvcrev1alpha1.BandwidthMeasurementList
+				require.NoError(t, c.List(ctx, &measurements, client.InNamespace(cert.Namespace)))
+				for i := range measurements.Items {
+					m := &measurements.Items[i]
+					if m.Spec.JobRef.Name != job.Name {
+						continue
+					}
+					status := m.Status
+					attempt.Measurements = append(attempt.Measurements, evidence.Measurement{
+						Kind: "bandwidth", Name: m.Name, LogProfile: m.Spec.LogProfileRef, TestType: m.Spec.TestType,
+						Complete: apimeta.IsStatusConditionTrue(
+							m.Status.Conditions, nvcrev1alpha1.BandwidthMeasurementComplete,
+						),
+						StartTime: m.Status.StartTime, CompletionTime: m.Status.CompletionTime, Bandwidth: &status,
+					})
+				}
+				if len(job.Spec.Thresholds) > 0 {
+					pass := true
+					value := 459.56
+					attempt.Threshold = &evidence.ThresholdDecision{
+						Version: evidence.Version, Reason: "ThresholdsMet",
+						Evaluations: []evidence.ThresholdEvaluation{{
+							Metric: "busBandwidthGBps", Expression: job.Spec.Thresholds["busBandwidthGBps"],
+							MeasuredValue: &value, Passed: &pass,
+						}},
+					}
+				}
+				require.NoError(t, evidence.Create(
+					ctx, c, cert.Namespace, evidence.KindAttempt, ci, wi, attempt.Job, owner, attempt,
+				))
+			}
+		}
+	}
+}
+
 // copyStatus copies status from src to dst. Returns true if status was non-empty.
 func copyStatus(dst, src client.Object) bool { //nolint:gocyclo
 	switch d := dst.(type) {
@@ -401,10 +517,12 @@ func startManager(
 	require.NoError(t, err)
 
 	err = (&controller.WorkflowReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		Recorder:           mgr.GetEventRecorder("workflow-controller"),
-		JobRequeueInterval: 1 * time.Second,
+		Client:                   mgr.GetClient(),
+		Scheme:                   mgr.GetScheme(),
+		Recorder:                 mgr.GetEventRecorder("workflow-controller"),
+		JobRequeueInterval:       1 * time.Second,
+		CaptureArchiveEvidence:   archiveCfg != nil,
+		IncludeArchiveFailureLog: archiveCfg != nil && archiveCfg.IncludeFailureLog,
 	}).SetupWithManager(mgr)
 	require.NoError(t, err)
 
@@ -531,7 +649,7 @@ type waitConfig struct {
 	// WaitForDeletion lists resources that must be fully deleted before collection.
 	WaitForDeletion []collectSpec `json:"waitForDeletion,omitempty"`
 	// Archive enables the results archive on the Certification
-	// controller with an in-memory store per destination, the same way the
+	// controller with an in-memory store per selected bucket, the same way the
 	// fake PodLogFetcher stands in for the kubelet. The stores' contents are
 	// serialised into the golden under "archive".
 	Archive        *archiveSpec `json:"archive,omitempty"`
@@ -540,10 +658,8 @@ type waitConfig struct {
 
 // archiveSpec configures the fake results archive for one case.
 type archiveSpec struct {
-	ClusterID         string            `json:"clusterId"`
-	Default           string            `json:"default,omitempty"`
-	Destinations      map[string]string `json:"destinations"`
-	IncludeFailureLog bool              `json:"includeFailureLog,omitempty"`
+	ClusterID         string `json:"clusterId"`
+	IncludeFailureLog bool   `json:"includeFailureLog,omitempty"`
 	// ExpectObjects waits until the stores hold this many objects in total.
 	ExpectObjects int `json:"expectObjects,omitempty"`
 	// WaitForState waits until the waitFor object's archive-state annotation
@@ -994,7 +1110,7 @@ func collectAndSerialize(
 		results["frozenGoodput"] = frozenGoodput
 	}
 	if cfg.Archive != nil {
-		results["archive"] = collectArchive(t, archiveStores, cfg.Archive)
+		results["archive"] = collectArchive(t, archiveStores)
 	}
 	if specImmutability != nil {
 		results["specImmutability"] = specImmutability
@@ -1056,6 +1172,15 @@ func sanitizeObject(obj client.Object) {
 	}
 	obj.SetOwnerReferences(refs)
 
+	// Measurements carry the exact Job UID so archive capture cannot attach a
+	// measurement left by a deleted/recreated Job with the same name. Envtest
+	// assigns that UID nondeterministically; focused controller tests pin the
+	// label itself, while integration goldens omit its generated value.
+	if labels := obj.GetLabels(); labels[evidence.LabelJobUID] != "" {
+		delete(labels, evidence.LabelJobUID)
+		obj.SetLabels(labels)
+	}
+
 	// Normalize the workflow-uid creation-identity annotation: it embeds the
 	// Workflow's UID, which changes every envtest run.
 	if ann := obj.GetAnnotations(); ann["nvcre.nvidia.com/workflow-uid"] != "" {
@@ -1107,8 +1232,6 @@ func sanitizeObject(obj client.Object) {
 			ann[controller.AnnotationArchiveURI] = sanitizeArchiveURI(ann[controller.AnnotationArchiveURI])
 			o.SetAnnotations(ann)
 		}
-	case *corev1.ConfigMap:
-		sanitizeNodeIdentityConfigMap(o)
 	case *nvcrev1alpha1.WorkloadRun:
 		clearConditionTimestamps(o.Status.Conditions)
 		sanitizeNodeResultsRef(o.Status.SucceededNodesRef, o.Status.FailedNodesRef)
@@ -1390,7 +1513,7 @@ func collectTopologyMetrics(t *testing.T, namespace, workflow, topologyKey strin
 // ---------------------------------------------------------------------------
 
 // buildFakeArchive turns the case's archive block into a controller config
-// backed by one MemoryStore per destination. Provenance is fixed so the golden
+// backed by one MemoryStore per selected bucket. Provenance is fixed so the golden
 // pins the record's shape rather than the test binary's build.
 func buildFakeArchive(spec *archiveSpec) (*controller.ArchiveConfig, map[string]*archive.MemoryStore) {
 	if spec == nil {
@@ -1399,8 +1522,6 @@ func buildFakeArchive(spec *archiveSpec) (*controller.ArchiveConfig, map[string]
 	digest := "sha256:0000000000000000000000000000000000000000000000000000000000000e57"
 	k8s := "v0.0.0-envtest"
 	cfg := &controller.ArchiveConfig{
-		Destinations:      map[string]controller.ArchiveDestination{},
-		Default:           spec.Default,
 		ClusterID:         spec.ClusterID,
 		IncludeFailureLog: spec.IncludeFailureLog,
 		Provenance: record.Provenance{
@@ -1410,14 +1531,11 @@ func buildFakeArchive(spec *archiveSpec) (*controller.ArchiveConfig, map[string]
 		},
 	}
 	stores := map[string]*archive.MemoryStore{}
-	for name, raw := range spec.Destinations {
-		dest, err := archive.ParseDestination(raw)
-		if err != nil {
-			panic(fmt.Sprintf("archive destination %q: %v", raw, err))
+	cfg.StoreForBucket = func(bucket string) archive.Store {
+		if stores[bucket] == nil {
+			stores[bucket] = archive.NewMemoryStore()
 		}
-		store := archive.NewMemoryStore()
-		stores[name] = store
-		cfg.Destinations[name] = controller.ArchiveDestination{Destination: dest, Store: store}
+		return stores[bucket]
 	}
 	return cfg, stores
 }
@@ -1463,9 +1581,8 @@ type archivedObject struct {
 }
 
 type archivedNode struct {
-	Name     string `json:"name"`
-	Identity string `json:"identity"`
-	Outcome  string `json:"outcome"`
+	Name    string `json:"name"`
+	Outcome string `json:"outcome"`
 }
 
 type archivedCategory struct {
@@ -1479,7 +1596,6 @@ type archivedGroup struct {
 	Name         string   `json:"name"`
 	Phase        string   `json:"phase"`
 	JobOutcome   string   `json:"jobOutcome"`
-	GroupOutcome string   `json:"groupOutcome"`
 	Measurements []string `json:"measurements"` // kind:frozen
 	Thresholds   []string `json:"thresholds"`   // metric=value:passed
 	Verdicts     []string `json:"verdicts"`     // node=Verdict/Reason
@@ -1487,9 +1603,7 @@ type archivedGroup struct {
 
 // collectArchive serialises every stored object as a summary, with the
 // volatile date and UID segments of the key normalised.
-func collectArchive(
-	t *testing.T, stores map[string]*archive.MemoryStore, cfg *archiveSpec,
-) map[string][]archivedObject {
+func collectArchive(t *testing.T, stores map[string]*archive.MemoryStore) map[string][]archivedObject {
 	t.Helper()
 	out := map[string][]archivedObject{}
 	names := make([]string, 0, len(stores))
@@ -1497,17 +1611,16 @@ func collectArchive(
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	for _, name := range names {
-		dest, _ := archive.ParseDestination(cfg.Destinations[name])
-		keys := stores[name].Keys()
+	for _, bucket := range names {
+		keys := stores[bucket].Keys()
 		objs := make([]archivedObject, 0, len(keys))
 		for _, key := range keys {
-			body, ct, _ := stores[name].Get(key)
+			body, ct, _ := stores[bucket].Get(key)
 			rec := &record.Record{}
 			require.NoError(t, json.Unmarshal(body, rec), "archived object %s is not a record", key)
-			objs = append(objs, summarizeRecord(sanitizeArchiveURI("gs://"+dest.Bucket+"/"+key), ct, rec))
+			objs = append(objs, summarizeRecord(sanitizeArchiveURI("gs://"+bucket+"/"+key), ct, rec))
 		}
-		out[name] = objs
+		out[bucket] = objs
 	}
 	return out
 }
@@ -1523,7 +1636,7 @@ func summarizeRecord(uri, contentType string, rec *record.Record) archivedObject
 		o.Gaps = append(o.Gaps, g.Code)
 	}
 	for _, n := range rec.Nodes {
-		o.Nodes = append(o.Nodes, archivedNode{Name: n.HostnameAlias, Identity: n.IdentityCompleteness, Outcome: n.Outcome})
+		o.Nodes = append(o.Nodes, archivedNode{Name: n.HostnameAlias, Outcome: n.Outcome})
 	}
 	for _, c := range rec.Categories {
 		ac := archivedCategory{Domain: c.Domain, Variant: c.Variant, Status: c.Status, Groups: []archivedGroup{}}
@@ -1536,7 +1649,7 @@ func summarizeRecord(uri, contentType string, rec *record.Record) archivedObject
 					Name: g.Name, Phase: g.Phase, Measurements: []string{}, Thresholds: []string{}, Verdicts: []string{},
 				}
 				for _, a := range g.Attempts {
-					ag.JobOutcome, ag.GroupOutcome = a.JobOutcome, a.GroupOutcome
+					ag.JobOutcome = a.JobOutcome
 					for _, m := range a.Measurements {
 						ag.Measurements = append(ag.Measurements, fmt.Sprintf("%s:%t", m.Kind, m.Frozen))
 					}
@@ -1565,44 +1678,9 @@ func summarizeRecord(uri, contentType string, rec *record.Record) archivedObject
 var (
 	archiveDateSegment = regexp.MustCompile(`date=\d{4}-\d{2}-\d{2}`)
 	archiveRunSegment  = regexp.MustCompile(`run=[0-9a-f-]{36}`)
-	uuidPattern        = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
-
-// sanitizedNodeUID stands in for API-server-assigned Node UIDs in goldens.
-const sanitizedNodeUID = "node-uid"
 
 func sanitizeArchiveURI(uri string) string {
 	uri = archiveDateSegment.ReplaceAllString(uri, "date=DATE")
 	return archiveRunSegment.ReplaceAllString(uri, "run=UID")
-}
-
-// sanitizeNodeIdentityConfigMap replaces the gzip payload of a node-identity
-// ConfigMap with its decoded JSON, UIDs normalised, so the golden pins what
-// was captured rather than compressed bytes that differ per run.
-func sanitizeNodeIdentityConfigMap(cm *corev1.ConfigMap) {
-	raw, ok := cm.BinaryData[record.NodeIdentityConfigMapKey]
-	if !ok {
-		return
-	}
-	ids, err := record.DecodeNodeIdentity(raw)
-	if err != nil {
-		return
-	}
-	for i := range ids {
-		if uuidPattern.MatchString(ids[i].KubernetesUID) {
-			ids[i].KubernetesUID = sanitizedNodeUID
-		}
-	}
-	decoded, err := json.Marshal(ids)
-	if err != nil {
-		return
-	}
-	delete(cm.BinaryData, record.NodeIdentityConfigMapKey)
-	if len(cm.BinaryData) == 0 {
-		cm.BinaryData = nil
-	}
-	if cm.Data == nil {
-		cm.Data = map[string]string{}
-	}
-	cm.Data["node-identity.json"] = string(decoded)
 }

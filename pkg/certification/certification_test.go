@@ -44,6 +44,13 @@ const (
 	testCertNamespace         = "test-ns"
 )
 
+func TestSetArchiveDestination(t *testing.T) {
+	cert := &nvcrev1alpha1.Certification{}
+	require.NoError(t, setArchiveDestination(cert, "gs://results/runs/"))
+	require.Equal(t, "gs://results/runs", cert.Annotations[controller.AnnotationArchiveDestination])
+	require.ErrorContains(t, setArchiveDestination(cert, "s3://results/runs"), "must start with gs://")
+}
+
 func newCertificationFakeClient(t testing.TB, objects ...client.Object) client.WithWatch {
 	t.Helper()
 	scheme := runtime.NewScheme()

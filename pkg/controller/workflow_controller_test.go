@@ -5,6 +5,7 @@ package controller
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/testutil"
@@ -12,6 +13,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/naming"
 )
 
 func TestBuildTolerations(t *testing.T) {
@@ -234,7 +236,7 @@ func TestGetGroupJobName(t *testing.T) {
 		}
 
 		r := &WorkflowReconciler{}
-		result := r.getGroupJobName(workflow, input.GroupName, input.Iteration)
+		result := r.getGroupJobName(workflow, input.GroupName, input.Iteration, 0)
 
 		data, err := json.MarshalIndent(struct {
 			Result string `json:"result"`
@@ -245,6 +247,26 @@ func TestGetGroupJobName(t *testing.T) {
 		tc.Actual = string(data) + "\n"
 		return nil
 	})
+}
+
+func TestGetGroupJobNameRetryIsUnique(t *testing.T) {
+	workflow := &nvcrev1alpha1.Workflow{
+		Name:   strings.Repeat("long-workflow-", 8),
+		Status: nvcrev1alpha1.WorkflowStatus{Orchestration: &nvcrev1alpha1.OrchestrationStatus{TotalGroups: 1}},
+	}
+	r := &WorkflowReconciler{}
+	initial := r.getGroupJobName(workflow, "group-0", 1, 0)
+	retry := r.getGroupJobName(workflow, "group-0", 1, 1)
+	if initial == retry {
+		t.Fatalf("retry reused initial Job name %q", initial)
+	}
+	if len(retry) > naming.MaxJobNameLen {
+		t.Fatalf("retry name too long: %q", retry)
+	}
+	workflow.Name = "short"
+	if got := r.getGroupJobName(workflow, "group-0", 1, 1); !strings.HasSuffix(got, "-retry-1") {
+		t.Fatalf("retry suffix missing: %q", got)
+	}
 }
 
 func TestEffectiveIterations(t *testing.T) {

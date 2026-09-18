@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/catalog"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/cluster"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/controller"
@@ -602,8 +603,8 @@ Use --cleanup to teardown installed components after completion.`,
 			}
 			cfg.version = version
 			cfg.resultsFile = resultsFile
-			if archiveTo != "" {
-				setArchiveDestination(cfg.cert, archiveTo)
+			if err := setArchiveDestination(cfg.cert, archiveTo); err != nil {
+				return err
 			}
 			cfg.timeout, cfg.timeoutDerived = resolveWaitTimeout(
 				cfg.cert, timeout, cmd.Flags().Changed("timeout"))
@@ -656,22 +657,28 @@ Use --cleanup to teardown installed components after completion.`,
 	cmd.Flags().StringVar(&resultsFile, "results-file", "",
 		"Write certification report as JSON to this file path (requires --wait)")
 	cmd.Flags().StringVar(&archiveTo, "archive-to", "",
-		"Name of a controller-configured results-archive destination to write this run's record to "+
-			"(sets the nvcre.nvidia.com/archive-destination annotation; the controller must have the archive enabled)")
+		"Google Cloud Storage destination for this run's record as gs://bucket[/prefix] "+
+			"(the controller must have the results archive enabled)")
 	configFlags.AddFlags(cmd.Flags())
 
 	return cmd
 }
 
-// setArchiveDestination stamps the annotation the controller reads to pick a
-// results-archive destination. It does nothing else: the
-// controller owns the credentials and the list of valid names, and an unknown
-// name is reported on the Certification, not here.
-func setArchiveDestination(cert *nvcrev1alpha1.Certification, name string) {
+// setArchiveDestination validates and normalizes the raw Cloud Storage URI
+// before stamping the annotation the controller independently validates.
+func setArchiveDestination(cert *nvcrev1alpha1.Certification, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	destination, err := archive.ParseDestination(raw)
+	if err != nil {
+		return fmt.Errorf("--archive-to: %w", err)
+	}
 	if cert.Annotations == nil {
 		cert.Annotations = map[string]string{}
 	}
-	cert.Annotations[controller.AnnotationArchiveDestination] = name
+	cert.Annotations[controller.AnnotationArchiveDestination] = destination.String()
+	return nil
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -33,6 +34,7 @@ import (
 	trainerv1alpha1 "github.com/kubeflow/trainer/v2/pkg/apis/trainer/v1alpha1"
 
 	nvcrev1alpha1 "github.com/NVIDIA/cluster-readiness-engine/api/v1alpha1"
+	"github.com/NVIDIA/cluster-readiness-engine/pkg/archive/evidence"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/naming"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/nodemonitor"
 	"github.com/NVIDIA/cluster-readiness-engine/pkg/nodemonitor/cel"
@@ -299,7 +301,11 @@ func (r *JobReconciler) reconcileWorkload(ctx context.Context, job *nvcrev1alpha
 	// happens via owner reference cascade when the Certification is deleted.
 	if r.isTerminalState(job) {
 		if isJobAwaitingThresholdEvaluation(job) {
-			if r.checkPerformanceThresholds(ctx, job) {
+			pending, err := r.checkPerformanceThresholds(ctx, job)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if pending {
 				return ctrl.Result{RequeueAfter: r.getWorkloadRequeueInterval()}, nil
 			}
 		}
@@ -471,7 +477,11 @@ func (r *JobReconciler) updateStatusFromWorkload(ctx context.Context, job *nvcre
 		// The Job is already Succeeded; this may additionally set the
 		// ValidationFailed condition if thresholds are not met.
 		// If measurements aren't ready yet, requeue to check later.
-		if r.checkPerformanceThresholds(ctx, job) {
+		pending, err := r.checkPerformanceThresholds(ctx, job)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if pending {
 			return ctrl.Result{RequeueAfter: r.getWorkloadRequeueInterval()}, nil
 		}
 		return ctrl.Result{}, nil
@@ -734,9 +744,9 @@ func maxBusBandwidth(results []nvcrev1alpha1.BandwidthResult) float64 {
 // collected from BandwidthMeasurement and GoodputMeasurement status fields.
 // If any threshold is violated, the ValidationFailed condition is set on the Job.
 // Returns true if measurements are pending and the caller should requeue.
-func (r *JobReconciler) checkPerformanceThresholds(ctx context.Context, job *nvcrev1alpha1.Job) bool {
+func (r *JobReconciler) checkPerformanceThresholds(ctx context.Context, job *nvcrev1alpha1.Job) (bool, error) {
 	if len(job.Spec.Thresholds) == 0 {
-		return false
+		return false, nil
 	}
 	log := logf.FromContext(ctx)
 
@@ -747,10 +757,8 @@ func (r *JobReconciler) checkPerformanceThresholds(ctx context.Context, job *nvc
 	// validation immediately, naming the offending key.
 	if keyErr := threshold.ValidateKeysError(job.Spec.Thresholds); keyErr != nil {
 		log.Info("Threshold check failed: unknown threshold key", "message", keyErr.Error())
-		if err := r.setJobValidationStatus(ctx, job, metav1.ConditionTrue, reasonUnknownThresholdKey, keyErr.Error()); err != nil {
-			log.Error(err, "Failed to set ValidationFailed for unknown threshold key")
-		}
-		return false
+		decision := thresholdDecision(job.Spec.Thresholds, nil, true, reasonUnknownThresholdKey, keyErr.Error())
+		return false, r.setJobValidationStatus(ctx, job, metav1.ConditionTrue, reasonUnknownThresholdKey, keyErr.Error(), decision)
 	}
 
 	measured := collectJobMeasuredValues(ctx, r.Client, job)
@@ -759,16 +767,13 @@ func (r *JobReconciler) checkPerformanceThresholds(ctx context.Context, job *nvc
 		if r.measurementTimedOut(job) {
 			log.Info("Measurement timeout exceeded, failing threshold validation",
 				"missingKeys", missing, "timeout", r.getMeasurementTimeout(job))
-			if err := r.setJobValidationStatus(ctx, job, metav1.ConditionTrue, reasonMeasurementTimeout,
-				fmt.Sprintf("Measurement data not available within %s for keys: %v",
-					r.getMeasurementTimeout(job), missing)); err != nil {
-				log.Error(err, "Failed to set ValidationFailed for measurement timeout")
-			}
-			return false
+			message := fmt.Sprintf("Measurement data not available within %s for keys: %v", r.getMeasurementTimeout(job), missing)
+			decision := thresholdDecision(job.Spec.Thresholds, measured, true, reasonMeasurementTimeout, message)
+			return false, r.setJobValidationStatus(ctx, job, metav1.ConditionTrue, reasonMeasurementTimeout, message, decision)
 		}
 		log.V(1).Info("Threshold configured but measurement data not yet available, requeueing",
 			"missingKeys", missing)
-		return true
+		return true, nil
 	}
 
 	violations, evalErr := threshold.EvaluateAll(job.Spec.Thresholds, measured)
@@ -776,24 +781,44 @@ func (r *JobReconciler) checkPerformanceThresholds(ctx context.Context, job *nvc
 		// Unreachable when the upfront key check above passed, but fail loudly
 		// rather than treating an evaluation error as a pass.
 		log.Error(evalErr, "Threshold evaluation failed")
-		if err := r.setJobValidationStatus(ctx, job, metav1.ConditionTrue, reasonUnknownThresholdKey, evalErr.Error()); err != nil {
-			log.Error(err, "Failed to set ValidationFailed for threshold evaluation error")
-		}
-		return false
+		decision := thresholdDecision(job.Spec.Thresholds, measured, true, reasonUnknownThresholdKey, evalErr.Error())
+		return false, r.setJobValidationStatus(ctx, job, metav1.ConditionTrue, reasonUnknownThresholdKey, evalErr.Error(), decision)
 	}
 	if len(violations) > 0 {
 		v := violations[0]
 		log.Info("Threshold check failed", "key", v.Key, "reason", v.Reason, "message", v.Message)
-		if err := r.setJobValidationStatus(ctx, job, metav1.ConditionTrue, v.Reason, v.Message); err != nil {
-			log.Error(err, "Failed to set ValidationFailed")
-		}
-		return false
+		decision := thresholdDecision(job.Spec.Thresholds, measured, true, v.Reason, v.Message)
+		return false, r.setJobValidationStatus(ctx, job, metav1.ConditionTrue, v.Reason, v.Message, decision)
 	}
 
-	if err := r.setJobValidationStatus(ctx, job, metav1.ConditionFalse, reasonThresholdsMet, "All performance thresholds satisfied"); err != nil {
-		log.Error(err, "Failed to set ValidationFailed=False for threshold pass")
+	message := "All performance thresholds satisfied"
+	decision := thresholdDecision(job.Spec.Thresholds, measured, false, reasonThresholdsMet, message)
+	return false, r.setJobValidationStatus(ctx, job, metav1.ConditionFalse, reasonThresholdsMet, message, decision)
+}
+
+func thresholdDecision(thresholds map[string]string, measured map[string]float64, failed bool, reason, message string) evidence.ThresholdDecision {
+	d := evidence.ThresholdDecision{Version: evidence.Version, Failed: failed, Reason: reason, Message: message}
+	keys := make([]string, 0, len(thresholds))
+	for key := range thresholds {
+		keys = append(keys, key)
 	}
-	return false
+	sort.Strings(keys)
+	for _, key := range keys {
+		e := evidence.ThresholdEvaluation{Metric: key, Expression: thresholds[key]}
+		if value, ok := measured[key]; ok {
+			e.MeasuredValue = &value
+			pass, err := threshold.Evaluate(value, thresholds[key])
+			if err != nil {
+				e.Reason = "InvalidThresholdExpression"
+			} else {
+				e.Passed = &pass
+			}
+		} else {
+			e.Reason = "MeasurementUnavailable"
+		}
+		d.Evaluations = append(d.Evaluations, e)
+	}
+	return d
 }
 
 // measurementTimedOut returns true if the Job has been in Succeeded state longer
@@ -820,7 +845,23 @@ func maxAlgBandwidth(results []nvcrev1alpha1.BandwidthResult) float64 {
 
 // setJobValidationFailed sets the ValidationFailed condition independently of execution state.
 // This mirrors setJobHardwareFailed — the condition is additive, not exclusive.
-func (r *JobReconciler) setJobValidationStatus(ctx context.Context, job *nvcrev1alpha1.Job, status metav1.ConditionStatus, reason, message string) error {
+func (r *JobReconciler) setJobValidationStatus(ctx context.Context, job *nvcrev1alpha1.Job, status metav1.ConditionStatus, reason, message string, decision evidence.ThresholdDecision) error {
+	if evidence.Enabled(job) {
+		raw, err := json.Marshal(decision)
+		if err != nil {
+			return fmt.Errorf("marshal threshold decision: %w", err)
+		}
+		patch := client.MergeFrom(job.DeepCopy())
+		annotations := job.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[evidence.AnnotationThresholdDecision] = string(raw)
+		job.SetAnnotations(annotations)
+		if err := r.Patch(ctx, job, patch); err != nil {
+			return fmt.Errorf("persist threshold decision: %w", err)
+		}
+	}
 	changed := false
 	err := updateStatusWithRetry(ctx, r.Client, job, func(j *nvcrev1alpha1.Job) bool {
 		if status == metav1.ConditionTrue && len(j.Status.FailedNodes) == 0 {
@@ -1408,8 +1449,9 @@ func (r *JobReconciler) ensureGoodputMeasurement(ctx context.Context, job *nvcre
 		Name:      gmName,
 		Namespace: job.Namespace,
 		Labels: map[string]string{
-			labelManagedBy: managedByValue,
-			labelJobKey:    job.Name,
+			labelManagedBy:       managedByValue,
+			labelJobKey:          job.Name,
+			evidence.LabelJobUID: string(job.UID),
 		},
 		Spec: nvcrev1alpha1.GoodputMeasurementSpec{
 			JobRef: corev1.TypedLocalObjectReference{
@@ -1464,8 +1506,9 @@ func (r *JobReconciler) ensureBandwidthMeasurement(ctx context.Context, job *nvc
 		Name:      bmName,
 		Namespace: job.Namespace,
 		Labels: map[string]string{
-			labelManagedBy: managedByValue,
-			labelJobKey:    job.Name,
+			labelManagedBy:       managedByValue,
+			labelJobKey:          job.Name,
+			evidence.LabelJobUID: string(job.UID),
 		},
 		Spec: nvcrev1alpha1.BandwidthMeasurementSpec{
 			JobRef: corev1.TypedLocalObjectReference{

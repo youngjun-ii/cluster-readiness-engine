@@ -25,7 +25,6 @@ type MemoryStore struct {
 type memoryObject struct {
 	body        []byte
 	contentType string
-	generation  int64
 }
 
 // NewMemoryStore returns an empty store.
@@ -43,36 +42,24 @@ func (m *MemoryStore) FailNext(n int, err error) {
 }
 
 // Create implements Store.
-func (m *MemoryStore) Create(_ context.Context, key string, body []byte, contentType string) (ObjectInfo, error) {
+func (m *MemoryStore) Create(_ context.Context, key string, body []byte, contentType string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.creates++
 	if len(m.failures) > 0 {
 		err := m.failures[0]
 		m.failures = m.failures[1:]
-		return ObjectInfo{}, err
+		return err
 	}
-	if existing, ok := m.objects[key]; ok {
-		return infoOf(existing), ErrAlreadyExists
+	if _, ok := m.objects[key]; ok {
+		return ErrAlreadyExists
 	}
 	obj := memoryObject{
 		body:        append([]byte(nil), body...),
 		contentType: contentType,
-		generation:  1,
 	}
 	m.objects[key] = obj
-	return infoOf(obj), nil
-}
-
-// Stat implements Store.
-func (m *MemoryStore) Stat(_ context.Context, key string) (ObjectInfo, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	obj, ok := m.objects[key]
-	if !ok {
-		return ObjectInfo{}, ErrNotFound
-	}
-	return infoOf(obj), nil
+	return nil
 }
 
 // Put stores an object directly, bypassing the write-once check. Tests use
@@ -80,7 +67,7 @@ func (m *MemoryStore) Stat(_ context.Context, key string) (ObjectInfo, error) {
 func (m *MemoryStore) Put(key string, body []byte, contentType string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.objects[key] = memoryObject{body: append([]byte(nil), body...), contentType: contentType, generation: 1}
+	m.objects[key] = memoryObject{body: append([]byte(nil), body...), contentType: contentType}
 }
 
 // Keys returns the stored keys in sorted order.
@@ -111,8 +98,4 @@ func (m *MemoryStore) Creates() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.creates
-}
-
-func infoOf(obj memoryObject) ObjectInfo {
-	return ObjectInfo{Generation: obj.generation, CRC32C: CRC32C(obj.body), Size: int64(len(obj.body))}
 }

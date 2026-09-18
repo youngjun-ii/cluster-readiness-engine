@@ -47,15 +47,9 @@ metrics:
 # behaves exactly as before.
 resultsArchive:
   enabled: false
-  # Destination used by runs that name none. Empty means opt-in only: a run
-  # selects a destination with the nvcre.nvidia.com/archive-destination
-  # annotation (nvcrectl certification run --archive-to <name>).
-  default: ""
-  # Named destinations, name -> gs://bucket[/prefix]. Runs pick one by name;
-  # they can never name a bucket the controller was not configured with.
-  destinations: {}
-  #  dev: gs://nvcre-results-dev/runs
-  #  prod: gs://nvcre-results-prod/runs
+  # Runs opt in with `nvcrectl certification run --archive-to
+  # gs://bucket[/prefix]`. The controller identity needs object-creation
+  # permission on every bucket runs are allowed to select.
   # Recorded in every record and used in the object key. Required when enabled.
   clusterId: ""
   # Copy each failed Job's log tail (up to 32 KiB) into the record.
@@ -63,7 +57,7 @@ resultsArchive:
   auth:
     # applicationDefault: Workload Identity on GKE (bind the controller's
     #   ServiceAccount to a Google service account with
-    #   storage.objects.create and storage.objects.get on the bucket).
+    #   storage.objects.create on the bucket).
     # serviceAccountKey: mount a Secret holding a service-account JSON key and
     #   point GOOGLE_APPLICATION_CREDENTIALS at it (clusters off GCP).
     mode: applicationDefault

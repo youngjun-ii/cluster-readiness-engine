@@ -48,6 +48,30 @@ func TestControllerConcurrencyOptionsValidate(t *testing.T) {
 	})
 }
 
+func TestResultsArchiveOptionsValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		opts    resultsArchiveOptions
+		wantErr bool
+	}{
+		{name: "disabled"},
+		{name: "disabled with archive flags", opts: resultsArchiveOptions{clusterID: "cluster-a"}, wantErr: true},
+		{name: "enabled without cluster ID", opts: resultsArchiveOptions{enabled: true}, wantErr: true},
+		{name: "enabled", opts: resultsArchiveOptions{enabled: true, clusterID: "cluster-a"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.opts.validate()
+			if tc.wantErr && err == nil {
+				t.Fatal("validate() succeeded, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validate() = %v", err)
+			}
+		})
+	}
+}
+
 func TestControllerConcurrencyFlagDefaults(t *testing.T) {
 	cmd := newRootCommand()
 	p := testutil.TestCaseParser{

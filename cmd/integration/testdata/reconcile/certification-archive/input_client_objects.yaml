@@ -25,24 +25,13 @@ metadata:
 spec:
   providerID: "gce://envtest/us-central1-a/archive-node-02"
 ---
-# The identity snapshot the controller would have captured when it created
-# the first Workflow. Its UIDs deliberately differ from the live Nodes' so the
-# golden shows the record reading the snapshot, not the live objects.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: node-identity-test-cert-archive
-  namespace: default
-binaryData:
-  node-identity.json.gz: H4sIAAAAAAAC/72QT0sDMRDFv0vOm00bBGFvilAWpAilhSIeZpOhG8wmMX8WSul3d9ZeRGkFoc0hDLyX9ya/1wNzMCBrGETVmxG58xr5bM4q9l46jA4zprXR5EgOQup95sXokyPtU8ZhXb7k1XbFZ3SmaxJD9KPRGNtJ3ClshEA3UloWJXGFLkewcw7id/MulJfodVGZni437VP7wBePkrKXm+d7SQ6w1ivI0FlchJJYc1cxCx1aGg/fNq+NF71P+ewnHe1ooFZ+ENRah8u1P9zKmo8y5Z4GDux4rM4QlX8SlZeIyv8TlbcjKq9B9O0TLGlFNKUCAAA=
----
 apiVersion: nvcre.nvidia.com/v1alpha1
 kind: Certification
 metadata:
   name: test-cert-archive
   namespace: default
   annotations:
-    nvcre.nvidia.com/node-identity-ref: node-identity-test-cert-archive
+    nvcre.nvidia.com/archive-destination: gs://nvcre-results/runs
 spec:
   target:
     nodeSelector:

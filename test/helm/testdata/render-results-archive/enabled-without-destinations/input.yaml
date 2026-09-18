@@ -1,5 +1,0 @@
-# Enabling the archive with nothing to write to is refused at render time,
-# not discovered as a controller that never archives.
-set:
-  - resultsArchive.enabled=true
-  - resultsArchive.clusterId=cluster-a

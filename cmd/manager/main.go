@@ -10,14 +10,14 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"sort"
-	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"cloud.google.com/go/storage"
 	"github.com/spf13/cobra"
+	"google.golang.org/api/option"
 
 	trainerv1alpha1 "github.com/kubeflow/trainer/v2/pkg/apis/trainer/v1alpha1"
 
@@ -65,12 +65,10 @@ type controllerConcurrencyOptions struct {
 	measurementMaxConcurrentReconciles int
 }
 
-// resultsArchiveOptions is the flag surface of the results archive.
-// The archive is enabled by naming at least one destination.
+// resultsArchiveOptions is the controller-wide flag surface. Each run supplies
+// its own destination with the archive-destination annotation.
 type resultsArchiveOptions struct {
-	// destinations are "name=gs://bucket/prefix" pairs.
-	destinations      []string
-	defaultName       string
+	enabled           bool
 	clusterID         string
 	includeFailureLog bool
 }
@@ -79,75 +77,43 @@ type resultsArchiveOptions struct {
 // object key, so it must not carry separators or spaces.
 var clusterIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
-// parse validates the flags and returns the named destinations, without
-// building stores. Nil means the archive is disabled.
-func (o resultsArchiveOptions) parse() (map[string]archive.Destination, error) {
-	if len(o.destinations) == 0 {
-		if o.defaultName != "" || o.clusterID != "" || o.includeFailureLog {
-			return nil, fmt.Errorf("--results-archive-* flags need at least one --results-archive-destination")
+func (o resultsArchiveOptions) validate() error {
+	if !o.enabled {
+		if o.clusterID != "" || o.includeFailureLog {
+			return fmt.Errorf(
+				"--results-archive-cluster-id and --results-archive-include-failure-log require --results-archive-enabled")
 		}
-		return nil, nil
-	}
-	dests := make(map[string]archive.Destination, len(o.destinations))
-	for _, raw := range o.destinations {
-		name, url, ok := strings.Cut(raw, "=")
-		name = strings.TrimSpace(name)
-		if !ok || name == "" || strings.TrimSpace(url) == "" {
-			return nil, fmt.Errorf("--results-archive-destination %q must be name=gs://bucket/prefix", raw)
-		}
-		if _, dup := dests[name]; dup {
-			return nil, fmt.Errorf("--results-archive-destination %q is defined twice", name)
-		}
-		d, err := archive.ParseDestination(strings.TrimSpace(url))
-		if err != nil {
-			return nil, fmt.Errorf("--results-archive-destination %q: %w", raw, err)
-		}
-		dests[name] = d
-	}
-	if o.defaultName != "" {
-		if _, ok := dests[o.defaultName]; !ok {
-			names := make([]string, 0, len(dests))
-			for n := range dests {
-				names = append(names, n)
-			}
-			sort.Strings(names)
-			return nil, fmt.Errorf("--results-archive-default %q is not a configured destination (have: %s)",
-				o.defaultName, strings.Join(names, ", "))
-		}
+		return nil
 	}
 	if !clusterIDPattern.MatchString(o.clusterID) {
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"--results-archive-cluster-id is required when the archive is enabled and must match %s", clusterIDPattern)
 	}
-	return dests, nil
+	return nil
 }
 
-// build turns the parsed destinations into a controller config with one GCS
-// store per destination sharing one credential.
+// build creates one official Cloud Storage client shared by all run-selected
+// buckets. Application Default Credentials covers Workload Identity and the
+// service-account file mounted by the chart.
 func (o resultsArchiveOptions) build(
-	ctx context.Context, dests map[string]archive.Destination, prov record.Provenance,
-) (*controller.ArchiveConfig, error) {
-	if dests == nil {
-		return nil, nil
+	ctx context.Context, prov record.Provenance,
+) (*controller.ArchiveConfig, *storage.Client, error) {
+	if !o.enabled {
+		return nil, nil, nil
 	}
-	tokens, err := archive.DefaultTokenSource(ctx)
+	client, err := storage.NewClient(ctx, option.WithScopes(storage.ScopeReadWrite))
 	if err != nil {
-		return nil, fmt.Errorf("results archive credentials: %w", err)
+		return nil, nil, fmt.Errorf("results archive client: %w", err)
 	}
 	cfg := &controller.ArchiveConfig{
-		Destinations:      make(map[string]controller.ArchiveDestination, len(dests)),
-		Default:           o.defaultName,
 		ClusterID:         o.clusterID,
 		IncludeFailureLog: o.includeFailureLog,
 		Provenance:        prov,
+		StoreForBucket: func(bucket string) archive.Store {
+			return archive.NewGCSStore(client, bucket)
+		},
 	}
-	for name, d := range dests {
-		cfg.Destinations[name] = controller.ArchiveDestination{
-			Destination: d,
-			Store:       archive.NewGCSStore(d.Bucket, tokens),
-		}
-	}
-	return cfg, nil
+	return cfg, client, nil
 }
 
 // controllerProvenance is what the controller knows about itself for the
@@ -224,8 +190,7 @@ func newRootCommand() *cobra.Command {
 			if err := concurrency.validate(); err != nil {
 				return err
 			}
-			archiveDests, err := archiveOpts.parse()
-			if err != nil {
+			if err := archiveOpts.validate(); err != nil {
 				return err
 			}
 
@@ -328,13 +293,19 @@ func newRootCommand() *cobra.Command {
 			}
 
 			var archiveCfg *controller.ArchiveConfig
-			if archiveDests != nil {
-				archiveCfg, err = archiveOpts.build(context.Background(), archiveDests, controllerProvenance(clientset))
+			var archiveClient *storage.Client
+			if archiveOpts.enabled {
+				archiveCfg, archiveClient, err = archiveOpts.build(
+					context.Background(), controllerProvenance(clientset))
 				if err != nil {
 					return err
 				}
-				setupLog.Info("results archive enabled",
-					"destinations", len(archiveCfg.Destinations), "default", archiveCfg.Default, "clusterId", archiveCfg.ClusterID)
+				defer func() {
+					if err := archiveClient.Close(); err != nil {
+						setupLog.Error(err, "could not close results archive client")
+					}
+				}()
+				setupLog.Info("results archive enabled", "clusterId", archiveCfg.ClusterID)
 			}
 
 			if err := (&controller.JobReconciler{
@@ -347,11 +318,13 @@ func newRootCommand() *cobra.Command {
 				return fmt.Errorf("unable to create controller Job: %w", err)
 			}
 			if err := (&controller.WorkflowReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Clientset:               clientset,
-				Recorder:                mgr.GetEventRecorder("workflow-controller"),
-				MaxConcurrentReconciles: concurrency.maxConcurrentReconciles,
+				Client:                   mgr.GetClient(),
+				Scheme:                   mgr.GetScheme(),
+				Clientset:                clientset,
+				Recorder:                 mgr.GetEventRecorder("workflow-controller"),
+				CaptureArchiveEvidence:   archiveCfg != nil,
+				IncludeArchiveFailureLog: archiveCfg != nil && archiveCfg.IncludeFailureLog,
+				MaxConcurrentReconciles:  concurrency.maxConcurrentReconciles,
 			}).SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("unable to create controller Workflow: %w", err)
 			}
@@ -433,12 +406,8 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	cmd.Flags().BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	cmd.Flags().StringArrayVar(&archiveOpts.destinations, "results-archive-destination", nil,
-		"Named results-archive destination as name=gs://bucket/prefix (repeatable). "+
-			"Naming at least one enables the archive; a Certification selects one with the "+
-			"nvcre.nvidia.com/archive-destination annotation.")
-	cmd.Flags().StringVar(&archiveOpts.defaultName, "results-archive-default", "",
-		"Results-archive destination used by Certifications that name none. Empty means opt-in only.")
+	cmd.Flags().BoolVar(&archiveOpts.enabled, "results-archive-enabled", false,
+		"Enable run-selected results archiving to Google Cloud Storage.")
 	cmd.Flags().StringVar(&archiveOpts.clusterID, "results-archive-cluster-id", "",
 		"Cluster identifier recorded in every archived result and used in the object key. "+
 			"Required when the archive is enabled.")

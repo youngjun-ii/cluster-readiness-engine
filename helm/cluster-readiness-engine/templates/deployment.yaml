@@ -36,15 +36,7 @@ spec:
         - --measurement-max-concurrent-reconciles={{ required "manager.measurementMaxConcurrentReconciles is required" .Values.manager.measurementMaxConcurrentReconciles }}
         {{- with .Values.resultsArchive }}
         {{- if .enabled }}
-        {{- if not .destinations }}
-        {{- fail "resultsArchive.enabled requires at least one entry in resultsArchive.destinations" }}
-        {{- end }}
-        {{- range $name, $url := .destinations }}
-        - --results-archive-destination={{ $name }}={{ $url }}
-        {{- end }}
-        {{- if .default }}
-        - --results-archive-default={{ .default }}
-        {{- end }}
+        - --results-archive-enabled=true
         - --results-archive-cluster-id={{ required "resultsArchive.clusterId is required when resultsArchive.enabled is true" .clusterId }}
         {{- if .includeFailureLog }}
         - --results-archive-include-failure-log=true

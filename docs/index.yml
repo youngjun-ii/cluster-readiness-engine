@@ -96,8 +96,6 @@ navigation:
         path: operations/monitoring.md
       - page: Prometheus Metrics
         path: operations/metrics.md
-      - page: Results Archive
-        path: operations/results-archive.md
       - page: Verifying Release Artifacts
         path: operations/verifying-artifacts.md
       - page: Troubleshooting
